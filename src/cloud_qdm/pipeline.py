@@ -32,8 +32,10 @@ from cloud_qdm.sources import (
     open_mswep,
 )
 
+DataByVariable = dict[str, Any]
 
-def _load_references(config: RunConfig, logger) -> dict[str, Any]:
+
+def _load_references(config: RunConfig, logger) -> DataByVariable:
     references = {}
     for variable in ("tas", "tasmax", "tasmin"):
         logger.info("Loading ERA5-Land reference: %s", variable)
@@ -66,6 +68,14 @@ def _load_references(config: RunConfig, logger) -> dict[str, Any]:
     return references
 
 
+def _reference_source(config: RunConfig, variable: str) -> str:
+    if variable != "pr":
+        return config.earth_engine.era5_collection
+    if config.precipitation_reference.mode == "chirps":
+        return config.precipitation_reference.chirps_collection
+    return "MSWEP (user supplied; local path withheld from NetCDF metadata)"
+
+
 def _fetch_model(
     config: RunConfig,
     *,
@@ -92,13 +102,13 @@ def _correct_period(
     model: str,
     scenario: str,
     period,
-    references: dict[str, Any],
-    adjustments: dict[str, Any],
-    preloaded: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    references: DataByVariable,
+    adjustments: DataByVariable,
+    preloaded: DataByVariable | None = None,
+) -> DataByVariable:
     corrected = {}
     for variable in VARIABLES:
-        if preloaded:
+        if preloaded is not None:
             model_on_reference = preloaded[variable]
         else:
             raw = _fetch_model(
@@ -124,37 +134,29 @@ def _save_period(
     model: str,
     scenario: str,
     period,
-    corrected: dict[str, Any],
+    corrected: DataByVariable,
     summary_rows: list[dict[str, Any]],
 ) -> list[str]:
     output_paths = []
+    provenance = {
+        "model": model,
+        "scenario": scenario,
+        "period_start": period.start.isoformat(),
+        "period_end": period.end.isoformat(),
+        "calibration_start": config.calibration.start.isoformat(),
+        "calibration_end": config.calibration.end.isoformat(),
+        "aoi_bounds": config.aoi.as_list(),
+        "precipitation_reference": config.precipitation_reference.mode,
+        "model_source_collection": config.earth_engine.gddp_collection,
+    }
     for variable, data in corrected.items():
-        if variable == "pr":
-            reference_source = (
-                config.precipitation_reference.chirps_collection
-                if config.precipitation_reference.mode == "chirps"
-                else "MSWEP (user supplied; local path withheld from NetCDF metadata)"
-            )
-        else:
-            reference_source = config.earth_engine.era5_collection
         output_path = (
             config.run_dir / "corrected" / model / scenario / period.label / f"{variable}.nc"
         )
         save_netcdf(
             data,
             output_path,
-            {
-                "model": model,
-                "scenario": scenario,
-                "period_start": period.start.isoformat(),
-                "period_end": period.end.isoformat(),
-                "calibration_start": config.calibration.start.isoformat(),
-                "calibration_end": config.calibration.end.isoformat(),
-                "aoi_bounds": config.aoi.as_list(),
-                "precipitation_reference": config.precipitation_reference.mode,
-                "model_source_collection": config.earth_engine.gddp_collection,
-                "reference_source": reference_source,
-            },
+            {**provenance, "reference_source": _reference_source(config, variable)},
         )
         summary_rows.append(
             summarize(
@@ -168,6 +170,41 @@ def _save_period(
         )
         output_paths.append(str(output_path))
     return output_paths
+
+
+def _train_model(
+    config: RunConfig,
+    *,
+    model: str,
+    references: DataByVariable,
+    logger,
+) -> tuple[DataByVariable, DataByVariable]:
+    adjustments = {}
+    historical_on_reference = {}
+    for variable in VARIABLES:
+        logger.info("Fetching historical %s/%s", model, variable)
+        historical = _fetch_model(
+            config,
+            model=model,
+            scenario="historical",
+            period=config.calibration,
+            variable=variable,
+        )
+        historical = regrid_to_reference(historical, references[variable])
+        reference, historical = align_calibration_time(
+            references[variable],
+            historical,
+            minimum_coverage=config.processing.minimum_time_coverage,
+        )
+        historical_on_reference[variable] = historical
+
+        logger.info("Training QDM %s/%s", model, variable)
+        adjustment = train_qdm(reference, historical, variable=variable, config=config.qdm)
+        adjustments[variable] = adjustment
+        path = config.run_dir / "adjustments" / model / f"qdm_{variable}.nc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_adjustment(adjustment, str(path))
+    return adjustments, historical_on_reference
 
 
 def run_pipeline(config: RunConfig) -> dict[str, Any]:
@@ -212,80 +249,38 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
         manifest["models"][model] = {"status": "running", "outputs": [], "error": None}
         write_manifest(manifest, manifest_path)
         try:
-            adjustments = {}
-            historical_on_reference = {}
-            for variable in VARIABLES:
-                logger.info("Fetching historical %s/%s", model, variable)
-                historical = _fetch_model(
+            adjustments, historical = _train_model(
+                config, model=model, references=references, logger=logger
+            )
+            periods = [("historical", config.calibration, historical)]
+            periods.extend(
+                (scenario, period, None)
+                for scenario in config.scenarios
+                for period in config.future_windows
+            )
+            for scenario, period, preloaded in periods:
+                logger.info("Correcting %s/%s/%s", model, scenario, period.label)
+                corrected = _correct_period(
                     config,
                     model=model,
-                    scenario="historical",
-                    period=config.calibration,
-                    variable=variable,
+                    scenario=scenario,
+                    period=period,
+                    references=references,
+                    adjustments=adjustments,
+                    preloaded=preloaded,
                 )
-                historical = regrid_to_reference(historical, references[variable])
-                reference, historical = align_calibration_time(
-                    references[variable],
-                    historical,
-                    minimum_coverage=config.processing.minimum_time_coverage,
-                )
-                historical_on_reference[variable] = historical
-                logger.info("Training QDM %s/%s", model, variable)
-                adjustments[variable] = train_qdm(
-                    reference,
-                    historical,
-                    variable=variable,
-                    config=config.qdm,
-                )
-                adjustment_path = config.run_dir / "adjustments" / model / f"qdm_{variable}.nc"
-                adjustment_path.parent.mkdir(parents=True, exist_ok=True)
-                save_adjustment(adjustments[variable], str(adjustment_path))
-
-            corrected_historical = _correct_period(
-                config,
-                model=model,
-                scenario="historical",
-                period=config.calibration,
-                references=references,
-                adjustments=adjustments,
-                preloaded=historical_on_reference,
-            )
-            manifest["models"][model]["outputs"].extend(
-                _save_period(
-                    config,
-                    model=model,
-                    scenario="historical",
-                    period=config.calibration,
-                    corrected=corrected_historical,
-                    summary_rows=summary_rows,
-                )
-            )
-            del corrected_historical
-
-            for scenario in config.scenarios:
-                for period in config.future_windows:
-                    logger.info("Correcting %s/%s/%s", model, scenario, period.label)
-                    corrected = _correct_period(
+                manifest["models"][model]["outputs"].extend(
+                    _save_period(
                         config,
                         model=model,
                         scenario=scenario,
                         period=period,
-                        references=references,
-                        adjustments=adjustments,
+                        corrected=corrected,
+                        summary_rows=summary_rows,
                     )
-                    manifest["models"][model]["outputs"].extend(
-                        _save_period(
-                            config,
-                            model=model,
-                            scenario=scenario,
-                            period=period,
-                            corrected=corrected,
-                            summary_rows=summary_rows,
-                        )
-                    )
-                    del corrected
-                    gc.collect()
-
+                )
+                del corrected
+                gc.collect()
             manifest["models"][model]["status"] = "complete"
             logger.info("Completed model %s", model)
         except Exception as exc:

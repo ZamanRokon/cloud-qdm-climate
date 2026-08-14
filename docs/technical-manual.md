@@ -1,40 +1,23 @@
 # Technical manual
 
-## 1. Purpose and scope
+This is the operating guide. For the scientific basis and validation design,
+use [Methodology and validation](methodology.md).
 
-This manual describes installation, configuration, execution, output checking,
-and troubleshooting. The workflow bias-adjusts daily `tas`, `tasmax`, `tasmin`,
-and `pr` from NEX-GDDP-CMIP6 for a rectangular latitude/longitude AOI.
+## 1. Runtime and prerequisites
 
-The recommended calibration period is 1981-01-01 through 2014-12-31. Future
-projections begin on 2015-01-01 and are processed in multi-decadal windows.
+Earth Engine filters ERA5-Land, CHIRPS, and NEX-GDDP-CMIP6. `xee` exposes the
+requested subsets to Python; `xarray`, Dask, and `xsdba` perform regridding and
+QDM. Google Drive can hold persistent Colab inputs and outputs, but computation
+occurs in the Colab runtime.
 
-## 2. Runtime architecture
-
-Earth Engine hosts ERA5-Land, CHIRPS, and NEX-GDDP-CMIP6. The Python runtime
-constructs filtered Earth Engine requests and xee exposes the returned subsets
-as xarray objects. QDM is then trained and applied by xsdba in Colab or another
-Python machine. Outputs are written to the configured directory.
-
-For Colab, Google Drive is storage, not the compute engine. Keep the notebook
-open during a run. A disconnected runtime loses `/content` but not files already
-written to Drive.
-
-## 3. Prerequisites
-
-- Python 3.10–3.13.
-- A Google account and Earth Engine-enabled Cloud project.
-- Enough Colab/VM memory for the AOI and selected model count.
-- For MSWEP mode, authorized access and a supported NetCDF/Zarr copy.
-
-Never place Google access tokens, GitHub tokens, or service-account JSON in the
-repository or YAML configuration.
-
-## 4. Installation
+You need Python 3.10-3.13, an Earth Engine-enabled Google Cloud project, and
+enough memory for the AOI. MSWEP mode also requires an authorized NetCDF or
+Zarr copy. Never put access tokens or service-account JSON in YAML or Git.
 
 ### Google Colab
 
-Use the supplied notebook or execute:
+The supplied [notebook](https://github.com/ZamanRokon/cloud-qdm-climate/blob/main/notebooks/cloud_qdm_colab.ipynb) performs these
+steps. The equivalent setup is:
 
 ```python
 from google.colab import drive
@@ -43,18 +26,16 @@ drive.mount("/content/drive")
 !git clone https://github.com/ZamanRokon/cloud-qdm-climate.git
 %cd cloud-qdm-climate
 !python -m pip install -e ".[cloud]"
-```
 
-Authenticate Earth Engine:
-
-```python
 import ee
-
 ee.Authenticate()
 ee.Initialize(project="your-earth-engine-project")
 ```
 
-### Linux/WSL
+Keep the runtime connected. Files already written to Drive survive a runtime
+reset; files under `/content` do not.
+
+### Linux or WSL
 
 ```bash
 python3 -m venv .venv
@@ -63,201 +44,161 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[cloud,test]"
 ```
 
-Cartopy, GDAL, and geopandas are intentionally unnecessary because the AOI is
-a simple EPSG:4326 rectangle.
+## 2. Configure a run
 
-## 5. AOI configuration
+Copy one complete, validated template:
 
-Coordinates must be decimal degrees:
+- [`example_chirps.yml`](https://github.com/ZamanRokon/cloud-qdm-climate/blob/main/configs/example_chirps.yml) for cloud-hosted
+  precipitation; or
+- [`example_mswep.yml`](https://github.com/ZamanRokon/cloud-qdm-climate/blob/main/configs/example_mswep.yml) for user-supplied
+  precipitation.
+
+Change values in the copy; keep the example files as known-good references.
+
+### Required fields
+
+| Field | Meaning and rule |
+|---|---|
+| `run.name` | Safe output subdirectory name; no slash |
+| `run.output_dir` | Parent output directory, usually on Drive in Colab |
+| `earth_engine.project_id` | Earth Engine-enabled Cloud project |
+| `aoi.*` | EPSG:4326 rectangle: `min_lon`, `min_lat`, `max_lon`, `max_lat` |
+| `calibration` | Historical start/end; end must be on or before 2014-12-31 |
+| `future_windows` | Named, non-overlapping windows inside 2015-2100 |
+| `models` | NEX-GDDP-CMIP6 model IDs |
+| `scenarios` | `ssp245`, `ssp585`, or both |
+| `precipitation_reference.mode` | Exactly `chirps` or `mswep` |
+
+AOI coordinates must satisfy
+`-180 <= min_lon < max_lon <= 180` and
+`-90 <= min_lat < max_lat <= 90`. Antimeridian-crossing rectangles are not
+supported. A polygon or shapefile is not needed.
+
+`GFDL-CM4` has two collection grids. When selected, add:
 
 ```yaml
-aoi:
-  min_lon: 89.0
-  min_lat: 23.0
-  max_lon: 93.0
-  max_lat: 26.5
+grid_labels:
+  GFDL-CM4: gr1  # or gr2
 ```
 
-Rules:
+### QDM controls
 
-- `-180 ≤ longitude ≤ 180`
-- `-90 ≤ latitude ≤ 90`
-- minimum values must be strictly smaller than maximum values
-- antimeridian-crossing rectangles are not supported in version 0.1
+| Field | Default | Operational meaning |
+|---|---:|---|
+| `nquantiles` | `50` | Quantile nodes; minimum 5 |
+| `group` | `time.month` | Calendar-month training; currently the only supported group |
+| `wet_day_threshold_mm` | `0.1` | Precipitation frequency threshold in mm d-1 |
+| `adapt_wet_day_frequency` | `true` | Enable `xsdba` dry/wet frequency adaptation |
+| `interpolation` | `linear` | Interpolation between trained quantile factors |
+| `extrapolation` | `constant` | Use the nearest trained factor outside the quantile range |
 
-The rectangle is used both for Earth Engine clipping and xarray coordinate
-subsetting. No polygon shapefile is required.
+Keep these defaults until a validation experiment justifies changing them.
 
-## 6. CHIRPS mode
+### Processing controls
 
-Copy `configs/example_chirps.yml` and edit the Cloud project, AOI, models,
-future windows, and output directory.
+| Field | Default | Use |
+|---|---:|---|
+| `earth_engine_chunk_years` | `5` | Years in each Earth Engine request |
+| `latitude_chunk` | `40` | MSWEP/Dask latitude chunk |
+| `longitude_chunk` | `40` | MSWEP/Dask longitude chunk |
+| `minimum_time_coverage` | `0.95` | Minimum shared calibration dates |
+| `continue_on_model_error` | `false` | Continue an exploratory ensemble after one model fails |
+| `save_reference_subsets` | `false` | Persist reference AOI subsets for audit/debugging |
 
-```yaml
-precipitation_reference:
-  mode: chirps
-  chirps_collection: UCSB-CHG/CHIRPS/DAILY
-```
+Smaller Earth Engine request chunks reduce request size, not the final memory
+needed by QDM. Each monthly training group must span its time samples.
 
-CHIRPS is requested only for the AOI and calibration period. Temperature
-references always come from ERA5-Land.
+## 3. Prepare MSWEP correctly
 
-## 7. MSWEP mode
-
-### 7.1 Place the data
-
-For Colab, put the authorized file in Drive:
+MSWEP can be one NetCDF file, a glob such as `/path/mswep_daily_*.nc`, or a
+Zarr store. In Colab, store it once on Drive, for example:
 
 ```text
 /content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
 ```
 
-Do not upload the same large file for every job. For repeated arbitrary AOIs,
-convert the archive once to a time/latitude/longitude-chunked Zarr store.
-
-### 7.2 Inspect the file
+Inspect metadata without loading the arrays:
 
 ```bash
 cloud-qdm inspect-mswep /content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
 ```
 
-Record the precipitation variable and coordinate names. Check whether the data
-are already daily and whether precipitation is an accumulation or rate.
+Set `variable`, `latitude_name`, `longitude_name`, and `time_name` to the names
+reported. `unit_scale` multiplies the values. Data entering QDM must represent
+daily precipitation in `mm d-1`.
 
-### 7.3 Configure
+Set `aggregate_to_daily: true` only when each source value is an amount for its
+timestep. Convert rates to timestep amounts first; summing an unconverted rate
+is dimensionally wrong. For repeated large jobs, a time/latitude/longitude-
+chunked Zarr store or a pre-clipped regional file is usually faster than a
+single global NetCDF on mounted Drive.
 
-```yaml
-precipitation_reference:
-  mode: mswep
-  path: /content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
-  variable: precipitation
-  latitude_name: lat
-  longitude_name: lon
-  time_name: time
-  unit_scale: 1.0
-  aggregate_to_daily: false
-```
+Review [Data licensing and governance](data-governance.md) before moving or
+sharing MSWEP data.
 
-`unit_scale` is multiplied into the values. The final data must be daily
-millimetres with units `mm d-1`. If an hourly product stores millimetres per
-hourly step, set `aggregate_to_daily: true`. Do not aggregate a rate without
-first converting it to an amount per timestep.
+## 4. Validate and run
 
-Glob patterns such as `/path/mswep_daily_*.nc` are supported through
-`xarray.open_mfdataset`.
-
-## 8. Model and period selection
-
-The Earth Engine collection supplies only `ssp245` and `ssp585`. Model IDs are
-validated against the documented collection. `GFDL-CM4` contains two grid
-configurations and therefore requires a `grid_labels` entry.
-
-Example:
-
-```yaml
-models:
-  - ACCESS-CM2
-  - MIROC6
-scenarios:
-  - ssp245
-  - ssp585
-future_windows:
-  - start: 2015-01-01
-    end: 2040-12-31
-    label: near-term
-  - start: 2041-01-01
-    end: 2070-12-31
-    label: mid-century
-  - start: 2071-01-01
-    end: 2100-12-31
-    label: late-century
-```
-
-Processing all 2015–2100 values as one ranking population is deliberately not
-the default. Window lengths should be broadly comparable with the calibration
-sample.
-
-## 9. Validation and execution
-
-Validate without a cloud request:
+Validation reads YAML and checks names, bounds, dates, modes, and numeric
+settings without contacting Earth Engine:
 
 ```bash
 cloud-qdm validate my-run.yml
 ```
 
-Run:
+Run only after validation succeeds:
 
 ```bash
 cloud-qdm run my-run.yml
 ```
 
-The pipeline fails on invalid data by default. Set
-`processing.continue_on_model_error: true` only for exploratory ensembles, and
-inspect the manifest for failed models before using any ensemble statistics.
+The pipeline processes models sequentially. For each model it trains four QDM
+adjustments, saves corrected historical data, then processes every
+scenario/window. Default behavior stops at the first model failure. If
+`continue_on_model_error: true`, always inspect `run-manifest.json` before
+calculating ensemble statistics.
 
-## 10. Processing sequence
+For a first test, use one model, one scenario, a small AOI, and one short future
+window. Scale only after checking the complete output and logs. A stopped run
+does not automatically skip completed models; use a new `run.name` or remove
+only the incomplete run after verifying its path.
 
-For each model:
+## 5. Read the outputs
 
-1. Load the four reference variables.
-2. Fetch historical NEX-GDDP data for the calibration dates.
-3. Normalize units and coordinate order.
-4. Interpolate model data to each reference grid.
-5. Retain only common daily timestamps and check coverage.
-6. Train monthly QDM and save the adjustment parameters.
-7. Correct and save the historical period.
-8. Fetch, adjust, and save each future scenario/window.
-9. Enforce temperature ordering and non-negative precipitation.
-10. Append summary and provenance records.
+| Path | Purpose |
+|---|---|
+| `adjustments/<model>/qdm_<variable>.nc` | Trained factors for provenance/reuse |
+| `corrected/.../<variable>.nc` | Daily corrected field on the reference grid |
+| `run-config.yml` | Normalized effective configuration |
+| `run-manifest.json` | Run/model status, versions, and output paths |
+| `summary.csv` | Whole-array descriptive statistics for screening |
+| `logs/pipeline.log` | Progress and exception details |
+| `references/<variable>.nc` | Optional saved references |
 
-## 11. Outputs and provenance
+`summary.csv` is a screening aid, not scientific validation.
 
-Every NetCDF includes the source collection, model, experiment, correction
-method, calibration period, creation time, and software version where
-available. `run-config.yml` is the normalized configuration and
-`run-manifest.json` records successes and failures.
+Before accepting a run:
 
-`summary.csv` contains overall descriptive statistics. It is a quality-control
-aid, not a substitute for spatial and temporal validation.
+1. Confirm every intended model is `complete` in the manifest.
+2. Check units: K for temperature and mm d-1 for precipitation.
+3. Map missing values and interpolation edges.
+4. Verify `tasmin <= tas <= tasmax` and `pr >= 0`.
+5. Compare raw, reference, and corrected historical distributions on held-out
+   dates, including extremes and wet-day frequency.
+6. Test future change-signal preservation and report ensemble/reference
+   uncertainty.
 
-## 12. Quality-control checklist
+## 6. Troubleshooting
 
-Before accepting results:
+| Symptom | Check |
+|---|---|
+| Earth Engine initialization fails | Authenticate again; verify the project is Earth Engine enabled and matches `project_id` |
+| No model images | Check exact model ID, scenario, dates, and the `GFDL-CM4` grid label |
+| MSWEP variable missing | Run `inspect-mswep`; copy exact variable and coordinate names |
+| MSWEP selection is empty | Check coordinate order/range, AOI overlap, and calibration dates |
+| Colab memory failure | Reduce AOI/model count; shorten windows; process one model per run; consider high-memory compute |
+| MSWEP is slow on Drive | Pre-clip, rechunk to Zarr, or copy an authorized regional subset to `/content` temporarily |
+| QDM unit error | Confirm source meaning and units before applying `unit_scale` or daily aggregation |
 
-- Confirm the historical model and reference have at least 95% common dates.
-- Plot observed, raw historical, and corrected historical monthly cycles.
-- Compare quantiles and wet-day frequency on a held-out period.
-- Inspect boundaries for interpolation NaNs.
-- Confirm precipitation is in `mm d-1` before QDM.
-- Confirm temperature is in Kelvin during QDM.
-- Verify `tasmin ≤ tas ≤ tasmax` after adjustment.
-- Check that future changes remain plausible and are not clipped by unit errors.
-- Record model-specific missing dates and NEX interpolated-day metadata.
-
-## 13. Troubleshooting
-
-### Earth Engine authentication fails
-
-Confirm the project is registered for Earth Engine and rerun `ee.Authenticate()`.
-Do not commit a credential file.
-
-### Empty model collection
-
-Check model spelling, scenario, date limits, and `GFDL-CM4` grid label. Only
-`ssp245` and `ssp585` are supported by this Earth Engine collection.
-
-### Colab runs out of memory
-
-Reduce AOI size or model count, use shorter future windows, and lower spatial
-chunk sizes. Run one model at a time. Consider a high-memory runtime.
-
-### MSWEP reads slowly
-
-Avoid a single unchunked global NetCDF on mounted Drive. Pre-clip it or convert
-it to chunked Zarr. Copying a regional subset to `/content` can improve speed,
-but that temporary copy disappears when the runtime stops.
-
-### QDM unit error
-
-Inspect the DataArray `units` attribute. Expected values are `K` for
-temperature and `mm d-1` for precipitation.
+When reporting a failure, include the command, sanitized YAML, final log lines,
+Python version, and package version. Never include credentials or a licensed
+data file.

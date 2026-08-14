@@ -5,50 +5,23 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import date
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 SUPPORTED_SCENARIOS = frozenset({"ssp245", "ssp585"})
-SUPPORTED_MODELS = frozenset(
-    {
-        "ACCESS-CM2",
-        "ACCESS-ESM1-5",
-        "BCC-CSM2-MR",
-        "CESM2",
-        "CESM2-WACCM",
-        "CMCC-CM2-SR5",
-        "CMCC-ESM2",
-        "CNRM-CM6-1",
-        "CNRM-ESM2-1",
-        "CanESM5",
-        "EC-Earth3",
-        "EC-Earth3-Veg-LR",
-        "FGOALS-g3",
-        "GFDL-CM4",
-        "GFDL-ESM4",
-        "GISS-E2-1-G",
-        "HadGEM3-GC31-LL",
-        "HadGEM3-GC31-MM",
-        "IITM-ESM",
-        "INM-CM4-8",
-        "INM-CM5-0",
-        "IPSL-CM6A-LR",
-        "KACE-1-0-G",
-        "KIOST-ESM",
-        "MIROC-ES2L",
-        "MIROC6",
-        "MPI-ESM1-2-HR",
-        "MPI-ESM1-2-LR",
-        "MRI-ESM2-0",
-        "NESM3",
-        "NorESM2-LM",
-        "NorESM2-MM",
-        "TaiESM1",
-        "UKESM1-0-LL",
-    }
-)
+_MODEL_IDS = """
+ACCESS-CM2 ACCESS-ESM1-5 BCC-CSM2-MR CESM2 CESM2-WACCM
+CMCC-CM2-SR5 CMCC-ESM2 CNRM-CM6-1 CNRM-ESM2-1 CanESM5
+EC-Earth3 EC-Earth3-Veg-LR FGOALS-g3 GFDL-CM4 GFDL-ESM4
+GISS-E2-1-G HadGEM3-GC31-LL HadGEM3-GC31-MM IITM-ESM INM-CM4-8
+INM-CM5-0 IPSL-CM6A-LR KACE-1-0-G KIOST-ESM MIROC-ES2L MIROC6
+MPI-ESM1-2-HR MPI-ESM1-2-LR MRI-ESM2-0 NESM3 NorESM2-LM
+NorESM2-MM TaiESM1 UKESM1-0-LL
+"""
+SUPPORTED_MODELS = frozenset(_MODEL_IDS.split())
 
 
 class ConfigurationError(ValueError):
@@ -206,6 +179,87 @@ class RunConfig:
         return data
 
 
+def _required_text(data: dict[str, Any], key: str, field_name: str) -> str:
+    value = str(data.get(key, "")).strip()
+    if not value:
+        raise ConfigurationError(f"{field_name} is required.")
+    return value
+
+
+def _unique_list(raw: dict[str, Any], key: str, *, lowercase: bool = False) -> tuple[str, ...]:
+    values = raw.get(key)
+    if not isinstance(values, list) or not values:
+        raise ConfigurationError(f"{key} must be a non-empty YAML list.")
+    cleaned = [str(value).strip() for value in values]
+    if lowercase:
+        cleaned = [value.lower() for value in cleaned]
+    if any(not value for value in cleaned):
+        raise ConfigurationError(f"{key} entries must be non-empty strings.")
+    return tuple(dict.fromkeys(cleaned))
+
+
+def _parse_run(raw: dict[str, Any]) -> tuple[str, str]:
+    data = _section(raw, "run")
+    name = _required_text(data, "name", "run.name")
+    if any(char in name for char in "/\\"):
+        raise ConfigurationError("run.name must be a safe directory name.")
+    return name, _required_text(data, "output_dir", "run.output_dir")
+
+
+def _parse_earth_engine(raw: dict[str, Any]) -> EarthEngineConfig:
+    data = _section(raw, "earth_engine")
+    return EarthEngineConfig(
+        project_id=_required_text(data, "project_id", "earth_engine.project_id"),
+        era5_collection=str(data.get("era5_collection", "ECMWF/ERA5_LAND/DAILY_AGGR")),
+        gddp_collection=str(data.get("gddp_collection", "NASA/GDDP-CMIP6")),
+    )
+
+
+def _parse_periods(raw: dict[str, Any]) -> tuple[Period, tuple[Period, ...]]:
+    calibration = Period.from_mapping(_section(raw, "calibration"), "calibration")
+    if calibration.end > date(2014, 12, 31):
+        raise ConfigurationError("NEX historical calibration must end on or before 2014-12-31.")
+
+    values = raw.get("future_windows")
+    if not isinstance(values, list) or not values:
+        raise ConfigurationError("future_windows must be a non-empty YAML list.")
+    if not all(isinstance(value, dict) for value in values):
+        raise ConfigurationError("Every future_windows entry must be a mapping.")
+
+    windows = tuple(
+        Period.from_mapping(value, f"future_windows[{index}]") for index, value in enumerate(values)
+    )
+    ordered = sorted(windows, key=lambda item: item.start)
+    for previous, current in pairwise(ordered):
+        if current.start <= previous.end:
+            raise ConfigurationError("Future windows must not overlap.")
+    if any(
+        window.start < date(2015, 1, 1) or window.end > date(2100, 12, 31) for window in windows
+    ):
+        raise ConfigurationError("Future windows must fall within 2015-01-01 to 2100-12-31.")
+    return calibration, windows
+
+
+def _parse_models_and_scenarios(
+    raw: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    models = _unique_list(raw, "models")
+    unsupported_models = sorted(set(models) - SUPPORTED_MODELS)
+    if unsupported_models:
+        raise ConfigurationError(
+            "Unsupported NEX-GDDP-CMIP6 model ID(s): " + ", ".join(unsupported_models)
+        )
+
+    scenarios = _unique_list(raw, "scenarios", lowercase=True)
+    unsupported_scenarios = sorted(set(scenarios) - SUPPORTED_SCENARIOS)
+    if unsupported_scenarios:
+        raise ConfigurationError(
+            "Earth Engine NEX-GDDP supports only ssp245 and ssp585; invalid: "
+            + ", ".join(unsupported_scenarios)
+        )
+    return models, scenarios
+
+
 def _parse_precipitation(data: dict[str, Any]) -> PrecipitationReferenceConfig:
     mode = str(data.get("mode", "")).lower().strip()
     if mode not in {"chirps", "mswep"}:
@@ -230,6 +284,54 @@ def _parse_precipitation(data: dict[str, Any]) -> PrecipitationReferenceConfig:
     return PrecipitationReferenceConfig(mode=mode, chirps_collection=collection, mswep=mswep)
 
 
+def _parse_qdm(raw: dict[str, Any]) -> QDMConfig:
+    data = raw.get("qdm", {})
+    if not isinstance(data, dict):
+        raise ConfigurationError("'qdm' must be a YAML mapping.")
+    try:
+        config = QDMConfig(
+            nquantiles=int(data.get("nquantiles", 50)),
+            group=str(data.get("group", "time.month")),
+            wet_day_threshold_mm=float(data.get("wet_day_threshold_mm", 0.1)),
+            adapt_wet_day_frequency=bool(data.get("adapt_wet_day_frequency", True)),
+            interpolation=str(data.get("interpolation", "linear")),
+            extrapolation=str(data.get("extrapolation", "constant")),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("qdm contains an invalid numeric value.") from exc
+    if config.nquantiles < 5:
+        raise ConfigurationError("qdm.nquantiles must be at least 5.")
+    if config.group != "time.month":
+        raise ConfigurationError("Version 0.1 supports qdm.group='time.month' only.")
+    if config.wet_day_threshold_mm < 0:
+        raise ConfigurationError("qdm.wet_day_threshold_mm must be non-negative.")
+    return config
+
+
+def _parse_processing(raw: dict[str, Any]) -> ProcessingConfig:
+    data = raw.get("processing", {})
+    if not isinstance(data, dict):
+        raise ConfigurationError("'processing' must be a YAML mapping.")
+    try:
+        config = ProcessingConfig(
+            earth_engine_chunk_years=int(data.get("earth_engine_chunk_years", 5)),
+            latitude_chunk=int(data.get("latitude_chunk", 40)),
+            longitude_chunk=int(data.get("longitude_chunk", 40)),
+            minimum_time_coverage=float(data.get("minimum_time_coverage", 0.95)),
+            continue_on_model_error=bool(data.get("continue_on_model_error", False)),
+            save_reference_subsets=bool(data.get("save_reference_subsets", False)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("processing contains an invalid numeric value.") from exc
+    if config.earth_engine_chunk_years < 1:
+        raise ConfigurationError("processing.earth_engine_chunk_years must be >= 1.")
+    if min(config.latitude_chunk, config.longitude_chunk) < 1:
+        raise ConfigurationError("Spatial chunks must be positive integers.")
+    if not 0 < config.minimum_time_coverage <= 1:
+        raise ConfigurationError("minimum_time_coverage must be in (0, 1].")
+    return config
+
+
 def load_config(path: str | Path) -> RunConfig:
     """Load and validate a YAML run configuration."""
     config_path = Path(path).expanduser()
@@ -242,102 +344,18 @@ def load_config(path: str | Path) -> RunConfig:
     if not isinstance(raw, dict):
         raise ConfigurationError("Configuration root must be a YAML mapping.")
 
-    run = _section(raw, "run")
-    name = str(run.get("name", "")).strip()
-    output_dir = str(run.get("output_dir", "")).strip()
-    if not name or any(char in name for char in "/\\"):
-        raise ConfigurationError("run.name must be a safe non-empty directory name.")
-    if not output_dir:
-        raise ConfigurationError("run.output_dir is required.")
-
-    ee_raw = _section(raw, "earth_engine")
-    project_id = str(ee_raw.get("project_id", "")).strip()
-    if not project_id:
-        raise ConfigurationError("earth_engine.project_id is required.")
-    earth_engine = EarthEngineConfig(
-        project_id=project_id,
-        era5_collection=str(ee_raw.get("era5_collection", "ECMWF/ERA5_LAND/DAILY_AGGR")),
-        gddp_collection=str(ee_raw.get("gddp_collection", "NASA/GDDP-CMIP6")),
-    )
-
+    name, output_dir = _parse_run(raw)
+    earth_engine = _parse_earth_engine(raw)
     aoi = Bounds.from_mapping(_section(raw, "aoi"))
-    calibration = Period.from_mapping(_section(raw, "calibration"), "calibration")
-    if calibration.end > date(2014, 12, 31):
-        raise ConfigurationError("NEX historical calibration must end on or before 2014-12-31.")
+    calibration, future_windows = _parse_periods(raw)
+    models, scenarios = _parse_models_and_scenarios(raw)
 
-    windows_raw = raw.get("future_windows")
-    if not isinstance(windows_raw, list) or not windows_raw:
-        raise ConfigurationError("future_windows must be a non-empty YAML list.")
-    future_windows = tuple(
-        Period.from_mapping(item, f"future_windows[{index}]")
-        for index, item in enumerate(windows_raw)
-        if isinstance(item, dict)
-    )
-    if len(future_windows) != len(windows_raw):
-        raise ConfigurationError("Every future_windows entry must be a mapping.")
-    ordered = sorted(future_windows, key=lambda item: item.start)
-    for index, item in enumerate(ordered):
-        if item.start < date(2015, 1, 1) or item.end > date(2100, 12, 31):
-            raise ConfigurationError("Future windows must fall within 2015-01-01 to 2100-12-31.")
-        if index and item.start <= ordered[index - 1].end:
-            raise ConfigurationError("Future windows must not overlap.")
-
-    models_raw = raw.get("models")
-    if not isinstance(models_raw, list) or not models_raw:
-        raise ConfigurationError("models must be a non-empty YAML list.")
-    models = tuple(dict.fromkeys(str(item).strip() for item in models_raw))
-    unsupported_models = sorted(set(models) - SUPPORTED_MODELS)
-    if unsupported_models:
-        raise ConfigurationError(
-            "Unsupported NEX-GDDP-CMIP6 model ID(s): " + ", ".join(unsupported_models)
-        )
-
-    scenarios_raw = raw.get("scenarios")
-    if not isinstance(scenarios_raw, list) or not scenarios_raw:
-        raise ConfigurationError("scenarios must be a non-empty YAML list.")
-    scenarios = tuple(dict.fromkeys(str(item).lower().strip() for item in scenarios_raw))
-    unsupported_scenarios = sorted(set(scenarios) - SUPPORTED_SCENARIOS)
-    if unsupported_scenarios:
-        raise ConfigurationError(
-            "Earth Engine NEX-GDDP supports only ssp245 and ssp585; invalid: "
-            + ", ".join(unsupported_scenarios)
-        )
-
-    grid_labels = {str(key): str(value) for key, value in raw.get("grid_labels", {}).items()}
+    labels = raw.get("grid_labels", {})
+    if not isinstance(labels, dict):
+        raise ConfigurationError("'grid_labels' must be a YAML mapping.")
+    grid_labels = {str(key): str(value) for key, value in labels.items()}
     if "GFDL-CM4" in models and grid_labels.get("GFDL-CM4") not in {"gr1", "gr2"}:
         raise ConfigurationError("GFDL-CM4 requires grid_labels.GFDL-CM4 set to gr1 or gr2.")
-
-    qdm_raw = raw.get("qdm", {})
-    qdm = QDMConfig(
-        nquantiles=int(qdm_raw.get("nquantiles", 50)),
-        group=str(qdm_raw.get("group", "time.month")),
-        wet_day_threshold_mm=float(qdm_raw.get("wet_day_threshold_mm", 0.1)),
-        adapt_wet_day_frequency=bool(qdm_raw.get("adapt_wet_day_frequency", True)),
-        interpolation=str(qdm_raw.get("interpolation", "linear")),
-        extrapolation=str(qdm_raw.get("extrapolation", "constant")),
-    )
-    if qdm.nquantiles < 5:
-        raise ConfigurationError("qdm.nquantiles must be at least 5.")
-    if qdm.group != "time.month":
-        raise ConfigurationError("Version 0.1 supports qdm.group='time.month' only.")
-    if qdm.wet_day_threshold_mm < 0:
-        raise ConfigurationError("qdm.wet_day_threshold_mm must be non-negative.")
-
-    processing_raw = raw.get("processing", {})
-    processing = ProcessingConfig(
-        earth_engine_chunk_years=int(processing_raw.get("earth_engine_chunk_years", 5)),
-        latitude_chunk=int(processing_raw.get("latitude_chunk", 40)),
-        longitude_chunk=int(processing_raw.get("longitude_chunk", 40)),
-        minimum_time_coverage=float(processing_raw.get("minimum_time_coverage", 0.95)),
-        continue_on_model_error=bool(processing_raw.get("continue_on_model_error", False)),
-        save_reference_subsets=bool(processing_raw.get("save_reference_subsets", False)),
-    )
-    if processing.earth_engine_chunk_years < 1:
-        raise ConfigurationError("processing.earth_engine_chunk_years must be >= 1.")
-    if processing.latitude_chunk < 1 or processing.longitude_chunk < 1:
-        raise ConfigurationError("Spatial chunks must be positive integers.")
-    if not 0 < processing.minimum_time_coverage <= 1:
-        raise ConfigurationError("minimum_time_coverage must be in (0, 1].")
 
     return RunConfig(
         name=name,
@@ -349,8 +367,8 @@ def load_config(path: str | Path) -> RunConfig:
         models=models,
         scenarios=scenarios,
         precipitation_reference=_parse_precipitation(_section(raw, "precipitation_reference")),
-        qdm=qdm,
-        processing=processing,
+        qdm=_parse_qdm(raw),
+        processing=_parse_processing(raw),
         grid_labels=grid_labels,
     )
 
