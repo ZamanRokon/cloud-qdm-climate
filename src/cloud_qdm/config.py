@@ -130,6 +130,7 @@ class QDMConfig:
     group: str = "time.month"
     wet_day_threshold_mm: float = 0.1
     adapt_wet_day_frequency: bool = True
+    random_seed: int = 42
     interpolation: str = "linear"
     extrapolation: str = "constant"
 
@@ -145,6 +146,19 @@ class ProcessingConfig:
 
 
 @dataclass(frozen=True)
+class EvaluationConfig:
+    training: Period
+    validation: Period
+
+
+@dataclass(frozen=True)
+class FigureConfig:
+    enabled: bool = False
+    formats: tuple[str, ...] = ("png", "pdf")
+    dpi: int = 300
+
+
+@dataclass(frozen=True)
 class RunConfig:
     name: str
     output_dir: str
@@ -157,6 +171,8 @@ class RunConfig:
     precipitation_reference: PrecipitationReferenceConfig
     qdm: QDMConfig = field(default_factory=QDMConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
+    evaluation: EvaluationConfig | None = None
+    figures: FigureConfig = field(default_factory=FigureConfig)
     grid_labels: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -176,6 +192,12 @@ class RunConfig:
         ]
         data["models"] = list(self.models)
         data["scenarios"] = list(self.scenarios)
+        data["figures"]["formats"] = list(self.figures.formats)
+        if self.evaluation:
+            data["evaluation"] = {
+                "training": _period_mapping(self.evaluation.training),
+                "validation": _period_mapping(self.evaluation.validation),
+            }
         return data
 
 
@@ -183,6 +205,21 @@ def _required_text(data: dict[str, Any], key: str, field_name: str) -> str:
     value = str(data.get(key, "")).strip()
     if not value:
         raise ConfigurationError(f"{field_name} is required.")
+    return value
+
+
+def _period_mapping(period: Period) -> dict[str, str]:
+    return {
+        "start": period.start.isoformat(),
+        "end": period.end.isoformat(),
+        "label": period.label,
+    }
+
+
+def _boolean(data: dict[str, Any], key: str, default: bool, section: str) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{section}.{key} must be true or false.")
     return value
 
 
@@ -293,7 +330,8 @@ def _parse_qdm(raw: dict[str, Any]) -> QDMConfig:
             nquantiles=int(data.get("nquantiles", 50)),
             group=str(data.get("group", "time.month")),
             wet_day_threshold_mm=float(data.get("wet_day_threshold_mm", 0.1)),
-            adapt_wet_day_frequency=bool(data.get("adapt_wet_day_frequency", True)),
+            adapt_wet_day_frequency=_boolean(data, "adapt_wet_day_frequency", True, "qdm"),
+            random_seed=int(data.get("random_seed", 42)),
             interpolation=str(data.get("interpolation", "linear")),
             extrapolation=str(data.get("extrapolation", "constant")),
         )
@@ -305,6 +343,8 @@ def _parse_qdm(raw: dict[str, Any]) -> QDMConfig:
         raise ConfigurationError("Version 0.1 supports qdm.group='time.month' only.")
     if config.wet_day_threshold_mm < 0:
         raise ConfigurationError("qdm.wet_day_threshold_mm must be non-negative.")
+    if not 0 <= config.random_seed <= 2**32 - 1:
+        raise ConfigurationError("qdm.random_seed must be between 0 and 4294967295.")
     return config
 
 
@@ -318,8 +358,8 @@ def _parse_processing(raw: dict[str, Any]) -> ProcessingConfig:
             latitude_chunk=int(data.get("latitude_chunk", 40)),
             longitude_chunk=int(data.get("longitude_chunk", 40)),
             minimum_time_coverage=float(data.get("minimum_time_coverage", 0.95)),
-            continue_on_model_error=bool(data.get("continue_on_model_error", False)),
-            save_reference_subsets=bool(data.get("save_reference_subsets", False)),
+            continue_on_model_error=_boolean(data, "continue_on_model_error", False, "processing"),
+            save_reference_subsets=_boolean(data, "save_reference_subsets", False, "processing"),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigurationError("processing contains an invalid numeric value.") from exc
@@ -330,6 +370,45 @@ def _parse_processing(raw: dict[str, Any]) -> ProcessingConfig:
     if not 0 < config.minimum_time_coverage <= 1:
         raise ConfigurationError("minimum_time_coverage must be in (0, 1].")
     return config
+
+
+def _parse_evaluation(raw: dict[str, Any], calibration: Period) -> EvaluationConfig | None:
+    data = raw.get("evaluation")
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ConfigurationError("'evaluation' must be a YAML mapping.")
+    training = Period.from_mapping(_section(data, "training"), "evaluation.training")
+    validation = Period.from_mapping(_section(data, "validation"), "evaluation.validation")
+    for name, period in (("training", training), ("validation", validation)):
+        if period.start < calibration.start or period.end > calibration.end:
+            raise ConfigurationError(f"evaluation.{name} must fall inside calibration.")
+    if training.end >= validation.start:
+        raise ConfigurationError(
+            "Evaluation training must end before the validation period starts."
+        )
+    return EvaluationConfig(training=training, validation=validation)
+
+
+def _parse_figures(raw: dict[str, Any]) -> FigureConfig:
+    data = raw.get("figures", {})
+    if not isinstance(data, dict):
+        raise ConfigurationError("'figures' must be a YAML mapping.")
+    formats = _unique_list({"formats": data.get("formats", ["png", "pdf"])}, "formats")
+    unsupported = sorted(set(formats) - {"pdf", "png", "svg"})
+    if unsupported:
+        raise ConfigurationError("figures.formats supports only png, pdf, and svg.")
+    try:
+        dpi = int(data.get("dpi", 300))
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("figures.dpi must be an integer.") from exc
+    if not 150 <= dpi <= 600:
+        raise ConfigurationError("figures.dpi must be between 150 and 600.")
+    return FigureConfig(
+        enabled=_boolean(data, "enabled", False, "figures"),
+        formats=formats,
+        dpi=dpi,
+    )
 
 
 def load_config(path: str | Path) -> RunConfig:
@@ -357,6 +436,13 @@ def load_config(path: str | Path) -> RunConfig:
     if "GFDL-CM4" in models and grid_labels.get("GFDL-CM4") not in {"gr1", "gr2"}:
         raise ConfigurationError("GFDL-CM4 requires grid_labels.GFDL-CM4 set to gr1 or gr2.")
 
+    evaluation = _parse_evaluation(raw, calibration)
+    figures = _parse_figures(raw)
+    if figures.enabled and evaluation is None:
+        raise ConfigurationError(
+            "figures.enabled requires independent evaluation.training and evaluation.validation periods."
+        )
+
     return RunConfig(
         name=name,
         output_dir=output_dir,
@@ -369,6 +455,8 @@ def load_config(path: str | Path) -> RunConfig:
         precipitation_reference=_parse_precipitation(_section(raw, "precipitation_reference")),
         qdm=_parse_qdm(raw),
         processing=_parse_processing(raw),
+        evaluation=evaluation,
+        figures=figures,
         grid_labels=grid_labels,
     )
 

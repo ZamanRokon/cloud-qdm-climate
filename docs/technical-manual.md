@@ -51,7 +51,8 @@ Copy one complete, validated template:
 - [`example_chirps.yml`](https://github.com/ZamanRokon/cloud-qdm-climate/blob/main/configs/example_chirps.yml) for cloud-hosted
   precipitation; or
 - [`example_mswep.yml`](https://github.com/ZamanRokon/cloud-qdm-climate/blob/main/configs/example_mswep.yml) for user-supplied
-  precipitation.
+  precipitation; or
+- [`example_paper.yml`](https://github.com/ZamanRokon/cloud-qdm-climate/blob/main/configs/example_paper.yml) for independent evaluation and paper figures.
 
 Change values in the copy; keep the example files as known-good references.
 
@@ -89,6 +90,7 @@ grid_labels:
 | `group` | `time.month` | Calendar-month training; currently the only supported group |
 | `wet_day_threshold_mm` | `0.1` | Precipitation frequency threshold in mm d-1 |
 | `adapt_wet_day_frequency` | `true` | Enable `xsdba` dry/wet frequency adaptation |
+| `random_seed` | `42` | Reproducible wet-day randomization seed |
 | `interpolation` | `linear` | Interpolation between trained quantile factors |
 | `extrapolation` | `constant` | Use the nearest trained factor outside the quantile range |
 
@@ -107,6 +109,38 @@ Keep these defaults until a validation experiment justifies changing them.
 
 Smaller Earth Engine request chunks reduce request size, not the final memory
 needed by QDM. Each monthly training group must span its time samples.
+
+### Independent evaluation and figures
+
+Figures are off by default. Enabling them requires an explicit chronological,
+non-overlapping training/validation split inside the full calibration period:
+
+```yaml
+evaluation:
+  training:
+    start: 1981-01-01
+    end: 2004-12-31
+    label: evaluation-training
+  validation:
+    start: 2005-01-01
+    end: 2014-12-31
+    label: independent-evaluation
+
+figures:
+  enabled: true
+  formats: [png, pdf]  # png, pdf, and svg are supported
+  dpi: 300             # 150-600; applies to raster output
+```
+
+The evaluation adjustment is trained only on `evaluation.training` and scored
+only on `evaluation.validation`. It is not used for projections. After
+evaluation, the pipeline trains the saved production adjustment on the complete
+`calibration` period. This provides held-out diagnostics without discarding the
+validation years from the final fit.
+
+Figure generation deliberately retains the full historical baseline in memory
+while future windows are processed and repeats several aggregations. Start with
+one model and PNG only. Add PDF after confirming the workflow fits the runtime.
 
 ## 3. Prepare MSWEP correctly
 
@@ -151,8 +185,9 @@ Run only after validation succeeds:
 cloud-qdm run my-run.yml
 ```
 
-The pipeline processes models sequentially. For each model it trains four QDM
-adjustments, saves corrected historical data, then processes every
+The pipeline processes models sequentially. When figures are enabled, it first
+runs the independent evaluation. It then trains four production QDM
+adjustments, saves corrected historical data, and processes every
 scenario/window. Default behavior stops at the first model failure. If
 `continue_on_model_error: true`, always inspect `run-manifest.json` before
 calculating ensemble statistics.
@@ -173,8 +208,12 @@ only the incomplete run after verifying its path.
 | `summary.csv` | Whole-array descriptive statistics for screening |
 | `logs/pipeline.log` | Progress and exception details |
 | `references/<variable>.nc` | Optional saved references |
+| `figures/core/` | Cross-model paper figures and consolidated CSV metrics |
+| `figures/by-model/...` | Model-level evaluation and projection figures |
 
 `summary.csv` is a screening aid, not scientific validation.
+The [paper-figure guide](paper-figures.md) defines every plotted statistic and
+explains which figures belong in the main text or supplement.
 
 Before accepting a run:
 
@@ -198,6 +237,8 @@ Before accepting a run:
 | Colab memory failure | Reduce AOI/model count; shorten windows; process one model per run; consider high-memory compute |
 | MSWEP is slow on Drive | Pre-clip, rechunk to Zarr, or copy an authorized regional subset to `/content` temporarily |
 | QDM unit error | Confirm source meaning and units before applying `unit_scale` or daily aggregation |
+| Figure generation is slow | Use one model, one window, PNG only, and a smaller AOI for the test run |
+| Figure validation fails | Confirm training ends before validation starts and both periods lie inside `calibration` |
 
 When reporting a failure, include the command, sanitized YAML, final log lines,
 Python version, and package version. Never include credentials or a licensed

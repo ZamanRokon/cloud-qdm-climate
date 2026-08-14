@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import zlib
+from contextlib import contextmanager
+
+import numpy as np
 import xarray as xr
 
 from cloud_qdm.config import QDMConfig
@@ -10,6 +14,25 @@ from cloud_qdm.sources import VARIABLE_METADATA
 
 class QDMError(RuntimeError):
     """Raised when QDM training or adjustment fails."""
+
+
+def _stable_seed(config: QDMConfig, variable: str, data: xr.DataArray, operation: str) -> int:
+    """Derive a repeatable seed for one variable, period, and operation."""
+    start = str(data["time"].values[0])
+    end = str(data["time"].values[-1])
+    token = f"{variable}:{operation}:{start}:{end}:{tuple(data.sizes.items())}"
+    return zlib.crc32(token.encode("utf-8"), config.random_seed)
+
+
+@contextmanager
+def _numpy_seed(seed: int):
+    """Temporarily seed NumPy without changing the caller's random state."""
+    state = np.random.get_state()
+    np.random.seed(seed)
+    try:
+        yield
+    finally:
+        np.random.set_state(state)
 
 
 def train_qdm(
@@ -43,8 +66,11 @@ def train_qdm(
         kwargs["adapt_freq_thresh"] = f"{config.wet_day_threshold_mm} mm d-1"
 
     try:
-        adjustment = QuantileDeltaMapping.train(**kwargs)
-        adjustment.ds.load()
+        seed = _stable_seed(config, variable, historical, "train")
+        with _numpy_seed(seed):
+            adjustment = QuantileDeltaMapping.train(**kwargs)
+            adjustment.ds.load()
+        adjustment.ds.attrs["qdm_random_seed"] = seed
         return adjustment
     except Exception as exc:
         raise QDMError(f"QDM training failed for {variable}: {exc}") from exc
@@ -61,11 +87,13 @@ def apply_qdm(
     simulation = simulation.copy()
     simulation.attrs["units"] = str(VARIABLE_METADATA[variable]["units"])
     try:
-        corrected = adjustment.adjust(
-            simulation.chunk({"time": -1}),
-            interp=config.interpolation,
-            extrapolation=config.extrapolation,
-        )
+        seed = _stable_seed(config, variable, simulation, "adjust")
+        with _numpy_seed(seed):
+            corrected = adjustment.adjust(
+                simulation.chunk({"time": -1}),
+                interp=config.interpolation,
+                extrapolation=config.extrapolation,
+            )
     except Exception as exc:
         raise QDMError(f"QDM adjustment failed for {variable}: {exc}") from exc
     if variable == "pr":
@@ -77,6 +105,7 @@ def apply_qdm(
             "bias_adjustment": "Quantile Delta Mapping",
             "qdm_group": config.group,
             "qdm_nquantiles": config.nquantiles,
+            "qdm_random_seed": seed,
         }
     )
     return corrected

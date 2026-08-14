@@ -96,11 +96,27 @@ step can affect occurrence statistics. Constant extrapolation applies the
 nearest trained correction beyond the outer quantile nodes; it does not
 independently estimate extreme-value tails.
 
+Frequency adaptation uses random tie-breaking and trace-value generation.
+`qdm.random_seed` makes that step repeatable for each variable, period, and
+operation while preserving the calling process's NumPy random state.
+
 ## 4. Validation design
 
 At minimum, use a held-out historical period. One defensible starting design is
 training on 1981-2004 and evaluating 2005-2014, provided data coverage and the
 application justify those dates. Do not evaluate only on the training sample.
+
+When `figures.enabled` is true, the pipeline implements this split explicitly:
+it fits a temporary QDM using only `evaluation.training`, adjusts only
+`evaluation.validation`, and compares reference, raw model, and corrected model
+on the held-out dates. It then fits the production QDM on the full calibration
+period. Evaluation metrics use cosine-latitude-weighted AOI-mean daily series;
+spatial bias panels calculate time-mean fields at every reference-grid cell.
+
+Taylor diagrams report correlation, normalized standard deviation, and
+centered RMSE. They do not show mean bias, extremes, wet-day occurrence, or
+dependence, so they must be interpreted with the accompanying metric, quantile,
+map, and extremes panels. See the [paper-figure guide](paper-figures.md).
 
 Report results by season and location, including:
 
@@ -119,8 +135,8 @@ periods require their own evaluation; `summary.csv` cannot establish fitness.
 
 ## 5. Reproducibility
 
-Archive the normalized configuration, manifest, QDM parameter files, logs,
-package versions, data-access date, collection IDs, model/grid labels, and
-validation code. Record the MSWEP version without exposing a private path or
-redistributing data. Pin a repository release for published work and cite every
-source dataset.
+Archive the normalized configuration (including `qdm.random_seed`), manifest,
+QDM parameter files, logs, package versions, data-access date, collection IDs,
+model/grid labels, and validation code. Record the MSWEP version without
+exposing a private path or redistributing data. Pin a repository release for
+published work and cite every source dataset.
