@@ -41,12 +41,21 @@ def configure_logging(run_dir: Path) -> logging.Logger:
 def save_netcdf(data: xr.DataArray, path: Path, attributes: dict[str, Any]) -> Path:
     """Materialize a corrected DataArray as a compressed NetCDF file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    output = data.astype(np.float32).copy()
+    output = data.where(np.isfinite(data)).astype(np.float32).copy()
+    output.attrs.pop("_FillValue", None)
+    output.attrs.pop("missing_value", None)
     output.attrs.update({key: str(value) for key, value in attributes.items()})
     output.attrs["created_utc"] = datetime.now(UTC).isoformat()
     output.attrs["software"] = "cloud-qdm-climate"
     output.attrs["software_version"] = __version__
-    encoding = {output.name or "climate": {"zlib": True, "complevel": 4, "dtype": "float32"}}
+    encoding = {
+        output.name or "climate": {
+            "zlib": True,
+            "complevel": 4,
+            "dtype": "float32",
+            "_FillValue": np.float32(np.nan),
+        }
+    }
     output.to_netcdf(path, engine="netcdf4", encoding=encoding)
     return path
 
@@ -61,16 +70,22 @@ def summarize(
     output_path: Path,
 ) -> dict[str, Any]:
     """Compute compact whole-cube quality-control statistics."""
+    finite = np.isfinite(data)
+    clean = data.where(finite)
     stats = xr.Dataset(
         {
-            "mean": data.mean(skipna=True),
-            "std": data.std(skipna=True),
-            "minimum": data.min(skipna=True),
-            "maximum": data.max(skipna=True),
-            "quantiles": data.quantile([0.05, 0.5, 0.95], dim=list(data.dims), skipna=True),
+            "mean": clean.mean(skipna=True),
+            "std": clean.std(skipna=True),
+            "minimum": clean.min(skipna=True),
+            "maximum": clean.max(skipna=True),
+            "quantiles": clean.quantile([0.05, 0.5, 0.95], dim=list(data.dims), skipna=True),
+            "finite_count": finite.sum(),
+            "zero_count": (clean == 0).sum(),
         }
     ).compute()
     quantiles = stats["quantiles"]
+    finite_count = int(stats["finite_count"].item())
+    total_count = int(data.size)
     return {
         "model": model,
         "scenario": scenario,
@@ -84,6 +99,11 @@ def summarize(
         "p50": float(quantiles.sel(quantile=0.5).item()),
         "p95": float(quantiles.sel(quantile=0.95).item()),
         "max": float(stats["maximum"].item()),
+        "total_values": total_count,
+        "finite_values": finite_count,
+        "non_finite_values": total_count - finite_count,
+        "finite_fraction": finite_count / total_count if total_count else 0.0,
+        "zero_values": int(stats["zero_count"].item()),
         "path": str(output_path),
     }
 

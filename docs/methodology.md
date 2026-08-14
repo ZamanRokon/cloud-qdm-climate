@@ -45,22 +45,27 @@ version recorded in the run manifest.
 | `tas` | ERA5-Land daily mean 2 m temperature | NEX-GDDP-CMIP6 | additive | ordered with min/max |
 | `tasmax` | ERA5-Land daily maximum 2 m temperature | NEX-GDDP-CMIP6 | additive | maximum of corrected triplet |
 | `tasmin` | ERA5-Land daily minimum 2 m temperature | NEX-GDDP-CMIP6 | additive | minimum of corrected triplet |
-| `pr` | CHIRPS or user-supplied MSWEP | NEX-GDDP-CMIP6 | multiplicative | clipped at zero |
+| `pr` | CHIRPS or user-supplied MSWEP | NEX-GDDP-CMIP6 | multiplicative | non-finite QDM results at finite inputs set to zero; clipped at zero |
 
 The processing order is fixed:
 
 1. Subset references and model data to the AOI and dates.
 2. Normalize coordinates and units (K; mm d-1).
-3. Bilinearly interpolate each model field to its variable's reference grid.
+3. Fetch the model with a 0.5-degree buffer, then bilinearly interpolate it to
+   the unbuffered reference grid.
 4. Align common historical dates and enforce minimum temporal coverage.
 5. Train monthly QDM on historical model/reference pairs.
 6. Apply the fitted adjustment to historical data and each future window.
-7. Enforce variable-domain constraints and write provenance-rich NetCDF.
+7. Enforce variable-domain constraints and write provenance-rich segments.
+8. Validate and merge future segments into one daily 2015-2100 NetCDF per
+   model, scenario, and variable.
 
 The default calibration is 1981-2014 because it overlaps the configured
-references and NEX historical experiment. Future windows lie within 2015-2100.
-Windows should contain enough samples per month for stable quantiles and should
-be stated explicitly in any publication.
+references and NEX historical experiment. Future windows must be chronological,
+gap-free, and collectively cover 2015-2100. Windows should contain enough
+samples per month for stable quantiles and should be stated explicitly in any
+publication. They remain analysis/QDM-ranking windows even though the final
+NetCDF is continuous.
 
 ## 3. Important interpretations
 
@@ -72,6 +77,11 @@ does not create independent climate dynamics at the finer spacing. Bilinear
 interpolation is not mass-conservative for precipitation, so water-balance
 applications should quantify the effect or implement a validated conservative
 alternative.
+
+The model request is spatially buffered before interpolation. This supplies
+source cells on both sides of the target boundary and prevents small AOIs from
+acquiring persistent NaN edge rows or columns merely because the model was
+clipped too tightly.
 
 ### Windows and stationarity
 
@@ -99,6 +109,13 @@ independently estimate extreme-value tails.
 Frequency adaptation uses random tie-breaking and trace-value generation.
 `qdm.random_seed` makes that step repeatable for each variable, period, and
 operation while preserving the calling process's NumPy random state.
+
+For MSWEP, non-finite input values are rejected unless
+`fill_non_finite_with_zero` is explicitly enabled. That option is appropriate
+only after confirming the values mean no precipitation rather than missing
+observations. After adjustment, an otherwise finite model precipitation value
+that produces NaN or infinity is set to zero; missing model input remains
+missing. Infinity is never written to final NetCDF files.
 
 ## 4. Validation design
 

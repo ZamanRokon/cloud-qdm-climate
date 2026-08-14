@@ -47,7 +47,7 @@ Then:
 2. Set the Earth Engine project, output directory, AOI, models, scenarios, and
    periods.
 3. In MSWEP mode, set the file path, variable name, coordinate names, units
-   scale, and daily-aggregation option.
+   scale, daily-aggregation option, and explicit non-finite-value policy.
 4. Authenticate Earth Engine once in the runtime.
 5. Validate, then run:
 
@@ -77,8 +77,10 @@ configuration field reference, operating guidance, and troubleshooting.
 QDM is trained independently by model, variable, grid cell, and calendar
 month. Historical model fields are bilinearly interpolated to each reference
 grid before training. The fitted parameters are reused for configured future
-windows. See [methodology and validation](docs/methodology.md) for equations,
-assumptions, and required evaluation.
+windows. Model retrieval includes a small spatial buffer before interpolation
+to prevent artificial missing edge cells. See
+[methodology and validation](docs/methodology.md) for equations, assumptions,
+and required evaluation.
 
 ## Paper figures
 
@@ -102,7 +104,7 @@ main-text figures or writing captions.
 outputs/<run-name>/
 |-- adjustments/<model>/qdm_<variable>.nc
 |-- corrected/<model>/historical/calibration/<variable>.nc
-|-- corrected/<model>/<scenario>/<window>/<variable>.nc
+|-- corrected/<model>/<scenario>/2015-2100/<variable>.nc
 |-- figures/core/
 |-- figures/by-model/<model>/evaluation/
 |-- figures/by-model/<model>/projection/<scenario>/<window>/
@@ -114,6 +116,9 @@ outputs/<run-name>/
 
 The normalized configuration, manifest, saved adjustment parameters, NetCDF
 attributes, and summary table provide the run audit trail.
+Future windows are processed separately for memory control and figure analysis,
+then merged into one continuous daily 2015-2100 file per variable. Temporary
+segment files are removed only after all four merged files are written.
 
 ## Know before use
 
@@ -121,6 +126,8 @@ attributes, and summary table provide the run audit trail.
   preserve multivariable and spatial dependence by itself.
 - A finer reference grid does not create independent fine-scale dynamics.
 - Bilinear precipitation regridding is not conservative.
+- Missing precipitation is not automatically the same as zero. MSWEP
+  replacement must be explicitly enabled after checking the source convention.
 - Extremes, wet-day behavior, trend preservation, and held-out historical
   performance require study-specific validation.
 - Colab is suitable for interactive AOI-scale work, not an unattended service.

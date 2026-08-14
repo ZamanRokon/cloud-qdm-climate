@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -80,6 +80,15 @@ class Bounds:
     def as_list(self) -> list[float]:
         return [self.min_lon, self.min_lat, self.max_lon, self.max_lat]
 
+    def padded(self, degrees: float) -> Bounds:
+        """Expand bounds without crossing valid longitude/latitude limits."""
+        return Bounds(
+            min_lon=max(-180.0, self.min_lon - degrees),
+            min_lat=max(-90.0, self.min_lat - degrees),
+            max_lon=min(180.0, self.max_lon + degrees),
+            max_lat=min(90.0, self.max_lat + degrees),
+        )
+
 
 @dataclass(frozen=True)
 class Period:
@@ -115,6 +124,7 @@ class MSWEPConfig:
     time_name: str = "time"
     unit_scale: float = 1.0
     aggregate_to_daily: bool = False
+    fill_non_finite_with_zero: bool = False
 
 
 @dataclass(frozen=True)
@@ -180,7 +190,9 @@ class RunConfig:
         return Path(self.output_dir).expanduser() / self.name
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
+        data = {"run": {"name": self.name, "output_dir": self.output_dir}, **asdict(self)}
+        data.pop("name")
+        data.pop("output_dir")
         data["calibration"] = {
             "start": self.calibration.start.isoformat(),
             "end": self.calibration.end.isoformat(),
@@ -192,6 +204,12 @@ class RunConfig:
         ]
         data["models"] = list(self.models)
         data["scenarios"] = list(self.scenarios)
+        data["precipitation_reference"] = {
+            "mode": self.precipitation_reference.mode,
+            "chirps_collection": self.precipitation_reference.chirps_collection,
+        }
+        if self.precipitation_reference.mswep:
+            data["precipitation_reference"].update(asdict(self.precipitation_reference.mswep))
         data["figures"]["formats"] = list(self.figures.formats)
         if self.evaluation:
             data["evaluation"] = {
@@ -270,11 +288,15 @@ def _parse_periods(raw: dict[str, Any]) -> tuple[Period, tuple[Period, ...]]:
     for previous, current in pairwise(ordered):
         if current.start <= previous.end:
             raise ConfigurationError("Future windows must not overlap.")
+        if current.start != previous.end + timedelta(days=1):
+            raise ConfigurationError("Future windows must be continuous without date gaps.")
     if any(
         window.start < date(2015, 1, 1) or window.end > date(2100, 12, 31) for window in windows
     ):
         raise ConfigurationError("Future windows must fall within 2015-01-01 to 2100-12-31.")
-    return calibration, windows
+    if ordered[0].start != date(2015, 1, 1) or ordered[-1].end != date(2100, 12, 31):
+        raise ConfigurationError("Future windows must collectively cover 2015-01-01 to 2100-12-31.")
+    return calibration, tuple(ordered)
 
 
 def _parse_models_and_scenarios(
@@ -314,7 +336,15 @@ def _parse_precipitation(data: dict[str, Any]) -> PrecipitationReferenceConfig:
             longitude_name=str(data.get("longitude_name", "lon")),
             time_name=str(data.get("time_name", "time")),
             unit_scale=float(data.get("unit_scale", 1.0)),
-            aggregate_to_daily=bool(data.get("aggregate_to_daily", False)),
+            aggregate_to_daily=_boolean(
+                data, "aggregate_to_daily", False, "precipitation_reference"
+            ),
+            fill_non_finite_with_zero=_boolean(
+                data,
+                "fill_non_finite_with_zero",
+                False,
+                "precipitation_reference",
+            ),
         )
         if not math.isfinite(mswep.unit_scale) or mswep.unit_scale <= 0:
             raise ConfigurationError("MSWEP unit_scale must be a positive finite number.")

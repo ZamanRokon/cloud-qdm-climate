@@ -44,6 +44,8 @@ precipitation_reference:
   time_name: time
   unit_scale: 1.0
   aggregate_to_daily: false
+  # Enable only after confirming non-finite source values represent dry days.
+  fill_non_finite_with_zero: true
 
 qdm:
   nquantiles: 50

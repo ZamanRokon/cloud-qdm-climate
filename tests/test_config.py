@@ -14,6 +14,11 @@ def test_bounds_validation() -> None:
         Bounds(89, -91, 93, 26.5).validate()
 
 
+def test_bounds_padding_stays_inside_coordinate_limits() -> None:
+    padded = Bounds(-179.8, -89.8, 179.8, 89.8).padded(0.5)
+    assert padded.as_list() == [-180.0, -90.0, 180.0, 90.0]
+
+
 def test_example_chirps_config_loads() -> None:
     path = Path(__file__).parents[1] / "configs" / "example_chirps.yml"
     config = load_config(path)
@@ -52,6 +57,34 @@ def test_paper_config_has_independent_evaluation() -> None:
     assert config.evaluation.training.end.year == 2004
     assert config.evaluation.validation.start.year == 2005
     assert config.qdm.random_seed == 42
+
+
+def test_mswep_example_explicitly_fills_verified_non_finite_values() -> None:
+    path = Path(__file__).parents[1] / "configs" / "example_mswep.yml"
+    config = load_config(path)
+    assert config.precipitation_reference.mswep is not None
+    assert config.precipitation_reference.mswep.fill_non_finite_with_zero
+
+
+def test_normalized_mswep_config_can_be_loaded_again(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "configs" / "example_mswep.yml"
+    config = load_config(source)
+    normalized = tmp_path / "normalized.yml"
+    normalized.write_text(yaml.safe_dump(config.to_dict(), sort_keys=False), encoding="utf-8")
+
+    reloaded = load_config(normalized)
+
+    assert reloaded.precipitation_reference.mswep == config.precipitation_reference.mswep
+
+
+def test_future_windows_must_cover_continuous_2015_to_2100(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "configs" / "example_chirps.yml"
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["future_windows"][1]["start"] = "2041-01-02"
+    path = tmp_path / "invalid.yml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="continuous"):
+        load_config(path)
 
 
 def test_evaluation_must_be_chronological(tmp_path: Path) -> None:

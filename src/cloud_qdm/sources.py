@@ -228,12 +228,7 @@ def open_mswep(
 ) -> xr.DataArray:
     """Open and subset an authorized MSWEP NetCDF collection or Zarr store."""
     path = str(Path(config.path).expanduser())
-    source_chunks = None
-    if chunks:
-        source_chunks = {
-            config.latitude_name: chunks.get("lat", 40),
-            config.longitude_name: chunks.get("lon", 40),
-        }
+    source_chunks = "auto" if chunks else None
     try:
         if path.endswith(".zarr"):
             dataset = xr.open_zarr(path, chunks=source_chunks)
@@ -266,15 +261,40 @@ def open_mswep(
     )
     if data.sizes.get("time", 0) == 0:
         raise DataSourceError("MSWEP contains no data for the calibration period.")
+    data = data.astype(np.float32) * config.unit_scale
+
+    non_finite_count = int((~np.isfinite(data)).sum().compute().item())
+    if non_finite_count:
+        if not config.fill_non_finite_with_zero:
+            raise DataSourceError(
+                f"MSWEP contains {non_finite_count:,} NaN or infinite values in the selected "
+                "AOI/period. Verify that they mean dry days, then set "
+                "precipitation_reference.fill_non_finite_with_zero: true to replace them."
+            )
+        data = xr.where(np.isfinite(data), data, 0.0)
+
+    negative_count = int((data < 0).sum().compute().item())
+    if negative_count:
+        raise DataSourceError(
+            f"MSWEP contains {negative_count:,} negative precipitation values after unit scaling."
+        )
     if config.aggregate_to_daily:
         data = data.resample(time="1D").sum(skipna=False)
-    data = data.astype(np.float32) * config.unit_scale
+    if chunks:
+        data = data.chunk(
+            {
+                "lat": chunks.get("lat", 40),
+                "lon": chunks.get("lon", 40),
+            }
+        )
     data.name = "pr"
     data.attrs.update(
         {
             "units": "mm d-1",
             "source": "MSWEP (user supplied; verify version and license)",
             "unit_scale_applied": config.unit_scale,
+            "non_finite_values_replaced": non_finite_count,
+            "non_finite_policy": ("zero" if config.fill_non_finite_with_zero else "reject"),
         }
     )
     return data
