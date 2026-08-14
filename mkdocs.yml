@@ -1,0 +1,10 @@
+site_name: Cloud QDM Climate
+site_description: Technical documentation for cloud-assisted CMIP6 Quantile Delta Mapping
+repo_url: https://github.com/ZamanRokon/cloud-qdm-climate
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Technical manual: technical-manual.md
+  - Methodology: methodology.md
+  - Data governance: data-governance.md

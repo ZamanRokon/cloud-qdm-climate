@@ -1,0 +1,19 @@
+name: Feature request
+description: Propose a focused scientific or engineering improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or scientific limitation should be addressed?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Include assumptions, validation needs, and output compatibility.
+    validations:
+      required: true

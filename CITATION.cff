@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, cite the repository and every source dataset listed in the technical manual."
+title: "Cloud QDM Climate"
+type: software
+authors:
+  - name: ZamanRokon
+version: 0.1.0
+date-released: 2026-08-14
+license: Apache-2.0
+repository-code: "https://github.com/ZamanRokon/cloud-qdm-climate"
+keywords:
+  - climate downscaling
+  - bias adjustment
+  - Quantile Delta Mapping
+  - CMIP6
+  - Google Earth Engine

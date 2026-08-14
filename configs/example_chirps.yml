@@ -1,0 +1,58 @@
+run:
+  name: bangladesh-chirps-example
+  output_dir: /content/drive/MyDrive/cloud-qdm/outputs
+
+earth_engine:
+  project_id: your-earth-engine-project
+  era5_collection: ECMWF/ERA5_LAND/DAILY_AGGR
+  gddp_collection: NASA/GDDP-CMIP6
+
+aoi:
+  min_lon: 89.0
+  min_lat: 23.0
+  max_lon: 93.0
+  max_lat: 26.5
+
+calibration:
+  start: 1981-01-01
+  end: 2014-12-31
+  label: calibration
+
+future_windows:
+  - start: 2015-01-01
+    end: 2040-12-31
+    label: near-term
+  - start: 2041-01-01
+    end: 2070-12-31
+    label: mid-century
+  - start: 2071-01-01
+    end: 2100-12-31
+    label: late-century
+
+models:
+  - ACCESS-CM2
+  - MIROC6
+
+scenarios:
+  - ssp245
+  - ssp585
+
+precipitation_reference:
+  mode: chirps
+  chirps_collection: UCSB-CHG/CHIRPS/DAILY
+
+qdm:
+  nquantiles: 50
+  group: time.month
+  wet_day_threshold_mm: 0.1
+  adapt_wet_day_frequency: true
+  interpolation: linear
+  extrapolation: constant
+
+processing:
+  earth_engine_chunk_years: 5
+  latitude_chunk: 40
+  longitude_chunk: 40
+  minimum_time_coverage: 0.95
+  continue_on_model_error: false
+  save_reference_subsets: false

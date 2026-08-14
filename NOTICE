@@ -1,0 +1,11 @@
+Cloud QDM Climate
+Copyright 2026 ZamanRokon
+
+The Apache-2.0 license applies to this repository's software and documentation.
+It does not grant rights to third-party climate datasets.
+
+This repository does not distribute MSWEP. Users must obtain MSWEP from GloH2O
+and comply with its CC BY-NC 4.0 terms or a separately negotiated commercial
+license. CHIRPS, ERA5-Land, and NEX-GDDP-CMIP6 retain their providers' terms,
+attribution requirements, and model-specific licenses. See
+docs/data-governance.md before publishing or redistributing derived products.

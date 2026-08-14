@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+dist/
+build/
+site/
+
+# Notebooks and editors
+.ipynb_checkpoints/
+.idea/
+.vscode/
+*.swp
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*service-account*.json
+*credentials*.json
+*oauth*.json
+
+# Climate inputs and outputs (never commit licensed or generated data)
+data/
+inputs/
+outputs/
+*.nc
+*.nc4
+*.grib
+*.grb
+*.tif
+*.tiff
+*.zarr/
+*.zip
+*.csv
+*.xlsx
+
+# OS files
+.DS_Store
+Thumbs.db
