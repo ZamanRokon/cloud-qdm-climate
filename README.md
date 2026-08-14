@@ -181,8 +181,6 @@ engineering, financial, or regulatory decisions.
 - [Technical manual](docs/technical-manual.md)
 - [Methodology and validation](docs/methodology.md)
 - [Data licensing and governance](docs/data-governance.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
 
 ## License
 
