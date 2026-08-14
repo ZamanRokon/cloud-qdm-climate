@@ -70,6 +70,69 @@ def _date_chunks(start: date, end: date, years: int) -> Iterator[tuple[pd.Timest
         current = chunk_end + pd.DateOffset(days=1)
 
 
+def _fetch_ee_variables(
+    collection: object,
+    *,
+    bands: dict[str, str],
+    period: Period,
+    bounds: Bounds,
+    resolution_degrees: float,
+    chunk_years: int,
+    units: dict[str, str],
+) -> dict[str, xr.DataArray]:
+    """Fetch several bands together to avoid repeating Earth Engine requests."""
+    try:
+        import ee
+    except ImportError as exc:  # pragma: no cover
+        raise DataSourceError("earthengine-api is not installed.") from exc
+
+    region = ee.Geometry.Rectangle(bounds.as_list(), proj="EPSG:4326", geodesic=False)
+    pieces: dict[str, list[xr.DataArray]] = {name: [] for name in bands}
+    for chunk_start, chunk_end in _date_chunks(period.start, period.end, chunk_years):
+        filter_end = chunk_end + pd.DateOffset(days=1)
+        selected = (
+            collection.filterBounds(region)
+            .filterDate(chunk_start.strftime("%Y-%m-%d"), filter_end.strftime("%Y-%m-%d"))
+            .select(list(bands.values()))
+            .map(lambda image: image.clip(region))
+        )
+        count = int(selected.size().getInfo())
+        if count == 0:
+            raise DataSourceError(
+                f"No images for {', '.join(bands)} from {chunk_start.date()} to {chunk_end.date()}."
+            )
+        try:
+            dataset = xr.open_dataset(
+                selected,
+                engine="ee",
+                crs="EPSG:4326",
+                scale=resolution_degrees,
+                geometry=region,
+            )
+        except Exception as exc:
+            raise DataSourceError(f"xee failed while opening {', '.join(bands)}: {exc}") from exc
+        for output_name, band in bands.items():
+            if band not in dataset:
+                raise DataSourceError(
+                    f"Earth Engine response for {output_name} did not contain band '{band}'."
+                )
+            pieces[output_name].append(dataset[band])
+
+    results = {}
+    for output_name, band in bands.items():
+        data = xr.concat(pieces[output_name], dim="time")
+        data = normalize_coordinates(
+            data,
+            latitude_name="y" if "y" in data.dims else "lat",
+            longitude_name="x" if "x" in data.dims else "lon",
+        )
+        data = subset_bounds(data, bounds)
+        data.name = output_name
+        data.attrs.update({"units": units[output_name], "source_band": band})
+        results[output_name] = data
+    return results
+
+
 def _fetch_ee_collection(
     collection: object,
     *,
@@ -81,52 +144,16 @@ def _fetch_ee_collection(
     chunk_years: int,
     units: str,
 ) -> xr.DataArray:
-    try:
-        import ee
-    except ImportError as exc:  # pragma: no cover
-        raise DataSourceError("earthengine-api is not installed.") from exc
-
-    region = ee.Geometry.Rectangle(bounds.as_list(), proj="EPSG:4326", geodesic=False)
-    pieces: list[xr.DataArray] = []
-    for chunk_start, chunk_end in _date_chunks(period.start, period.end, chunk_years):
-        filter_end = chunk_end + pd.DateOffset(days=1)
-        selected = (
-            collection.filterBounds(region)
-            .filterDate(chunk_start.strftime("%Y-%m-%d"), filter_end.strftime("%Y-%m-%d"))
-            .select(band)
-            .map(lambda image: image.clip(region))
-        )
-        count = int(selected.size().getInfo())
-        if count == 0:
-            raise DataSourceError(
-                f"No images for {output_name} from {chunk_start.date()} to {chunk_end.date()}."
-            )
-        try:
-            dataset = xr.open_dataset(
-                selected,
-                engine="ee",
-                crs="EPSG:4326",
-                scale=resolution_degrees,
-                geometry=region,
-            )
-        except Exception as exc:
-            raise DataSourceError(f"xee failed while opening {output_name}: {exc}") from exc
-        if band not in dataset:
-            raise DataSourceError(
-                f"Earth Engine response for {output_name} did not contain band '{band}'."
-            )
-        pieces.append(dataset[band])
-
-    data = xr.concat(pieces, dim="time")
-    data = normalize_coordinates(
-        data,
-        latitude_name="y" if "y" in data.dims else "lat",
-        longitude_name="x" if "x" in data.dims else "lon",
-    )
-    data = subset_bounds(data, bounds)
-    data.name = output_name
-    data.attrs.update({"units": units, "source_band": band})
-    return data
+    """Fetch one band; retained as a small public compatibility wrapper."""
+    return _fetch_ee_variables(
+        collection,
+        bands={output_name: band},
+        period=period,
+        bounds=bounds,
+        resolution_degrees=resolution_degrees,
+        chunk_years=chunk_years,
+        units={output_name: units},
+    )[output_name]
 
 
 def fetch_era5_reference(
@@ -153,6 +180,28 @@ def fetch_era5_reference(
         resolution_degrees=float(metadata["reference_resolution"]),
         chunk_years=chunk_years,
         units=str(metadata["units"]),
+    )
+
+
+def fetch_era5_references(
+    *,
+    collection_id: str,
+    period: Period,
+    bounds: Bounds,
+    chunk_years: int,
+) -> dict[str, xr.DataArray]:
+    """Fetch all three ERA5-Land temperature bands in each request."""
+    import ee
+
+    variables = ("tas", "tasmax", "tasmin")
+    return _fetch_ee_variables(
+        ee.ImageCollection(collection_id),
+        bands={name: str(VARIABLE_METADATA[name]["era5_band"]) for name in variables},
+        period=period,
+        bounds=bounds,
+        resolution_degrees=0.1,
+        chunk_years=chunk_years,
+        units={name: str(VARIABLE_METADATA[name]["units"]) for name in variables},
     )
 
 
@@ -217,6 +266,46 @@ def fetch_gddp(
         data.attrs["units"] = "mm d-1"
         data.attrs["unit_conversion"] = "kg m-2 s-1 multiplied by 86400"
     return data
+
+
+def fetch_gddp_variables(
+    *,
+    collection_id: str,
+    model: str,
+    scenario: str,
+    period: Period,
+    bounds: Bounds,
+    chunk_years: int,
+    grid_label: str | None = None,
+) -> dict[str, xr.DataArray]:
+    """Fetch all four NEX-GDDP variables in each Earth Engine request."""
+    import ee
+
+    collection = (
+        ee.ImageCollection(collection_id)
+        .filter(ee.Filter.eq("model", model))
+        .filter(ee.Filter.eq("scenario", scenario))
+    )
+    if grid_label:
+        collection = collection.filter(ee.Filter.eq("grid_label", grid_label))
+    results = _fetch_ee_variables(
+        collection,
+        bands={name: name for name in VARIABLES},
+        period=period,
+        bounds=bounds,
+        resolution_degrees=0.25,
+        chunk_years=chunk_years,
+        units={name: str(VARIABLE_METADATA[name]["units"]) for name in VARIABLES},
+    )
+    results["pr"] = results["pr"] * 86400.0
+    results["pr"].name = "pr"
+    results["pr"].attrs.update(
+        {
+            "units": "mm d-1",
+            "unit_conversion": "kg m-2 s-1 multiplied by 86400",
+        }
+    )
+    return results
 
 
 def open_mswep(

@@ -13,6 +13,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Changed
 
+- Renamed the installed command from `cloud-qdm` to the shorter `qdm`.
+- Batched multiband Earth Engine reads and related NetCDF writes, stopped
+  recomputing QDM for summaries, and added fast local scratch and compression
+  controls for substantially lower Colab runtime.
 - Simplified configuration parsing and removed repeated correction/provenance logic.
 - Reorganized documentation into concise orientation, operations, methodology,
   and data-governance guides.

@@ -60,9 +60,11 @@ qdm:
   extrapolation: constant
 
 processing:
-  earth_engine_chunk_years: 5
+  earth_engine_chunk_years: 10
   latitude_chunk: 40
   longitude_chunk: 40
+  netcdf_compression_level: 1
+  scratch_dir: /content/cloud-qdm-scratch
   minimum_time_coverage: 0.95
   continue_on_model_error: false
   save_reference_subsets: false

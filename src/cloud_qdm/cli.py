@@ -13,7 +13,7 @@ from cloud_qdm.sources import inspect_mswep
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="cloud-qdm",
+        prog="qdm",
         description="Bias-adjust NEX-GDDP-CMIP6 climate projections with QDM.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
