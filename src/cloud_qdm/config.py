@@ -147,9 +147,11 @@ class QDMConfig:
 
 @dataclass(frozen=True)
 class ProcessingConfig:
-    earth_engine_chunk_years: int = 5
+    earth_engine_chunk_years: int = 10
     latitude_chunk: int = 40
     longitude_chunk: int = 40
+    netcdf_compression_level: int = 1
+    scratch_dir: str | None = None
     minimum_time_coverage: float = 0.95
     continue_on_model_error: bool = False
     save_reference_subsets: bool = False
@@ -188,6 +190,13 @@ class RunConfig:
     @property
     def run_dir(self) -> Path:
         return Path(self.output_dir).expanduser() / self.name
+
+    @property
+    def segment_dir(self) -> Path:
+        """Return the disposable future-window workspace."""
+        if self.processing.scratch_dir:
+            return Path(self.processing.scratch_dir).expanduser() / self.name / ".segments"
+        return self.run_dir / ".segments"
 
     def to_dict(self) -> dict[str, Any]:
         data = {"run": {"name": self.name, "output_dir": self.output_dir}, **asdict(self)}
@@ -382,11 +391,16 @@ def _parse_processing(raw: dict[str, Any]) -> ProcessingConfig:
     data = raw.get("processing", {})
     if not isinstance(data, dict):
         raise ConfigurationError("'processing' must be a YAML mapping.")
+    scratch_dir = data.get("scratch_dir")
+    if scratch_dir is not None and (not isinstance(scratch_dir, str) or not scratch_dir.strip()):
+        raise ConfigurationError("processing.scratch_dir must be a non-empty path or null.")
     try:
         config = ProcessingConfig(
-            earth_engine_chunk_years=int(data.get("earth_engine_chunk_years", 5)),
+            earth_engine_chunk_years=int(data.get("earth_engine_chunk_years", 10)),
             latitude_chunk=int(data.get("latitude_chunk", 40)),
             longitude_chunk=int(data.get("longitude_chunk", 40)),
+            netcdf_compression_level=int(data.get("netcdf_compression_level", 1)),
+            scratch_dir=(scratch_dir.strip() if scratch_dir else None),
             minimum_time_coverage=float(data.get("minimum_time_coverage", 0.95)),
             continue_on_model_error=_boolean(data, "continue_on_model_error", False, "processing"),
             save_reference_subsets=_boolean(data, "save_reference_subsets", False, "processing"),
@@ -397,6 +411,8 @@ def _parse_processing(raw: dict[str, Any]) -> ProcessingConfig:
         raise ConfigurationError("processing.earth_engine_chunk_years must be >= 1.")
     if min(config.latitude_chunk, config.longitude_chunk) < 1:
         raise ConfigurationError("Spatial chunks must be positive integers.")
+    if not 0 <= config.netcdf_compression_level <= 9:
+        raise ConfigurationError("processing.netcdf_compression_level must be between 0 and 9.")
     if not 0 < config.minimum_time_coverage <= 1:
         raise ConfigurationError("minimum_time_coverage must be in (0, 1].")
     return config

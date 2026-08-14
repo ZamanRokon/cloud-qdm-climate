@@ -52,14 +52,14 @@ Then:
 5. Validate, then run:
 
 ```bash
-cloud-qdm validate my-run.yml
-cloud-qdm run my-run.yml
+qdm validate my-run.yml
+qdm run my-run.yml
 ```
 
 Inspect an unfamiliar MSWEP file before configuring it:
 
 ```bash
-cloud-qdm inspect-mswep /path/to/mswep_daily.nc
+qdm inspect-mswep /path/to/mswep_daily.nc
 ```
 
 The [technical manual](docs/technical-manual.md) gives the exact Colab setup,
@@ -119,6 +119,12 @@ attributes, and summary table provide the run audit trail.
 Future windows are processed separately for memory control and figure analysis,
 then merged into one continuous daily 2015-2100 file per variable. Temporary
 segment files are removed only after all four merged files are written.
+
+Earth Engine retrieves the four model variables together, and the NetCDF
+writer evaluates their shared Dask graph once. The Colab examples put temporary
+future-window files on `/content` rather than mounted Drive; final products
+still go to Drive. See the technical manual's performance section before a
+large ensemble run.
 
 ## Know before use
 

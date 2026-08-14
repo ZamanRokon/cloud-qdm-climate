@@ -61,7 +61,7 @@ docs = [
 ]
 
 [project.scripts]
-cloud-qdm = "cloud_qdm.cli:main"
+qdm = "cloud_qdm.cli:main"
 
 [project.urls]
 Documentation = "https://github.com/ZamanRokon/cloud-qdm-climate/tree/main/docs"

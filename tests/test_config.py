@@ -26,6 +26,11 @@ def test_example_chirps_config_loads() -> None:
     assert config.aoi.as_list() == [89.0, 23.0, 93.0, 26.5]
     assert config.scenarios == ("ssp245", "ssp585")
     assert config.future_windows[-1].end.year == 2100
+    assert config.processing.earth_engine_chunk_years == 10
+    assert config.processing.netcdf_compression_level == 1
+    assert config.segment_dir.as_posix().endswith(
+        "/content/cloud-qdm-scratch/bangladesh-chirps-example/.segments"
+    )
 
 
 def test_unsupported_scenario_is_rejected(tmp_path: Path) -> None:
@@ -107,6 +112,16 @@ def test_qdm_random_seed_range_is_validated(tmp_path: Path) -> None:
     path = tmp_path / "invalid.yml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="random_seed"):
+        load_config(path)
+
+
+def test_netcdf_compression_range_is_validated(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "configs" / "example_chirps.yml"
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["processing"]["netcdf_compression_level"] = 10
+    path = tmp_path / "invalid.yml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="netcdf_compression_level"):
         load_config(path)
 
 

@@ -27,6 +27,7 @@ from cloud_qdm.reporting import (
     base_manifest,
     configure_logging,
     save_netcdf,
+    save_netcdf_batch,
     summarize,
     write_manifest,
     write_summary,
@@ -34,8 +35,9 @@ from cloud_qdm.reporting import (
 from cloud_qdm.sources import (
     VARIABLES,
     fetch_chirps_reference,
-    fetch_era5_reference,
+    fetch_era5_references,
     fetch_gddp,
+    fetch_gddp_variables,
     initialize_earth_engine,
     open_mswep,
 )
@@ -47,16 +49,13 @@ FUTURE_OUTPUT_LABEL = "2015-2100"
 
 
 def _load_references(config: RunConfig, logger) -> DataByVariable:
-    references = {}
-    for variable in ("tas", "tasmax", "tasmin"):
-        logger.info("Loading ERA5-Land reference: %s", variable)
-        references[variable] = fetch_era5_reference(
-            collection_id=config.earth_engine.era5_collection,
-            variable=variable,
-            period=config.calibration,
-            bounds=config.aoi,
-            chunk_years=config.processing.earth_engine_chunk_years,
-        )
+    logger.info("Loading ERA5-Land temperature references in one batched request")
+    references = fetch_era5_references(
+        collection_id=config.earth_engine.era5_collection,
+        period=config.calibration,
+        bounds=config.aoi,
+        chunk_years=config.processing.earth_engine_chunk_years,
+    )
     if config.precipitation_reference.mode == "chirps":
         logger.info("Loading CHIRPS precipitation reference")
         references["pr"] = fetch_chirps_reference(
@@ -113,6 +112,24 @@ def _fetch_model(
     )
 
 
+def _fetch_model_variables(
+    config: RunConfig,
+    *,
+    model: str,
+    scenario: str,
+    period,
+) -> DataByVariable:
+    return fetch_gddp_variables(
+        collection_id=config.earth_engine.gddp_collection,
+        model=model,
+        scenario=scenario,
+        period=period,
+        bounds=config.aoi.padded(MODEL_FETCH_PADDING_DEGREES),
+        chunk_years=config.processing.earth_engine_chunk_years,
+        grid_label=config.grid_labels.get(model),
+    )
+
+
 def _correct_period(
     config: RunConfig,
     *,
@@ -125,13 +142,21 @@ def _correct_period(
 ) -> tuple[DataByVariable, DataByVariable]:
     corrected = {}
     model_inputs = {}
+    raw_inputs = (
+        None
+        if preloaded is not None
+        else _fetch_model_variables(
+            config,
+            model=model,
+            scenario=scenario,
+            period=period,
+        )
+    )
     for variable in VARIABLES:
         if preloaded is not None:
             model_on_reference = preloaded[variable]
         else:
-            raw = _fetch_model(
-                config, model=model, scenario=scenario, period=period, variable=variable
-            )
+            raw = raw_inputs[variable]
             model_on_reference = regrid_to_reference(raw, references[variable])
         model_inputs[variable] = model_on_reference
         corrected[variable] = apply_qdm(
@@ -157,8 +182,9 @@ def _save_period(
     summary_rows: list[dict[str, Any]],
     output_root: Path | None = None,
     record_summary: bool = True,
+    compression_level: int | None = None,
 ) -> list[str]:
-    output_paths = []
+    output_paths: list[str] = []
     provenance = {
         "model": model,
         "scenario": scenario,
@@ -171,24 +197,48 @@ def _save_period(
         "model_source_collection": config.earth_engine.gddp_collection,
     }
     root = output_root or config.run_dir / "corrected"
+    write_items = []
     for variable, data in corrected.items():
         output_path = root / model / scenario / period.label / f"{variable}.nc"
-        save_netcdf(
-            data,
-            output_path,
-            {**provenance, "reference_source": _reference_source(config, variable)},
-        )
-        if record_summary:
-            summary_rows.append(
-                summarize(
-                    data,
-                    model=model,
-                    scenario=scenario,
-                    period=period.label,
-                    variable=variable,
-                    output_path=output_path,
-                )
+        write_items.append(
+            (
+                data,
+                output_path,
+                {**provenance, "reference_source": _reference_source(config, variable)},
             )
+        )
+    level = (
+        config.processing.netcdf_compression_level
+        if compression_level is None
+        else compression_level
+    )
+    staging_dir = config.segment_dir.parent if config.processing.scratch_dir else None
+    temperature_items = [item for item in write_items if item[0].name != "pr"]
+    precipitation_items = [item for item in write_items if item[0].name == "pr"]
+    written = save_netcdf_batch(
+        temperature_items,
+        compression_level=level,
+        staging_dir=staging_dir,
+    ) + save_netcdf_batch(
+        precipitation_items,
+        compression_level=level,
+        staging_dir=staging_dir,
+    )
+    paths_by_variable = {path.stem: path for path in written}
+    for variable in corrected:
+        output_path = paths_by_variable[variable]
+        if record_summary:
+            with xr.open_dataarray(output_path, chunks="auto") as saved:
+                summary_rows.append(
+                    summarize(
+                        saved,
+                        model=model,
+                        scenario=scenario,
+                        period=period.label,
+                        variable=variable,
+                        output_path=output_path,
+                    )
+                )
         output_paths.append(str(output_path))
     return output_paths
 
@@ -258,7 +308,7 @@ def _merge_future_segments(
                     summary_rows=summary_rows,
                 )
             )
-    _remove_segment_files(all_segments, config.run_dir / ".segments")
+    _remove_segment_files(all_segments, config.segment_dir)
     return output_paths
 
 
@@ -274,15 +324,15 @@ def _train_model(
     evaluation_references = {}
     evaluation_raw = {}
     evaluation_corrected = {}
+    logger.info("Fetching historical %s variables in one batched request", model)
+    raw_historical = _fetch_model_variables(
+        config,
+        model=model,
+        scenario="historical",
+        period=config.calibration,
+    )
     for variable in VARIABLES:
-        logger.info("Fetching historical %s/%s", model, variable)
-        historical = _fetch_model(
-            config,
-            model=model,
-            scenario="historical",
-            period=config.calibration,
-            variable=variable,
-        )
+        historical = raw_historical[variable]
         historical = regrid_to_reference(historical, references[variable])
         reference, historical = align_calibration_time(
             references[variable],
@@ -396,6 +446,7 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                     "period_start": config.calibration.start.isoformat(),
                     "period_end": config.calibration.end.isoformat(),
                 },
+                compression_level=config.processing.netcdf_compression_level,
             )
 
     summary_rows: list[dict[str, Any]] = []
@@ -468,8 +519,13 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                         period=period,
                         corrected=corrected,
                         summary_rows=summary_rows,
-                        output_root=config.run_dir / ".segments",
+                        output_root=config.segment_dir,
                         record_summary=False,
+                        compression_level=(
+                            0
+                            if config.processing.scratch_dir
+                            else config.processing.netcdf_compression_level
+                        ),
                     )
                     for path_text in saved_segments:
                         path = Path(path_text)

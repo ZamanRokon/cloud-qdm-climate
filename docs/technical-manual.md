@@ -100,15 +100,24 @@ Keep these defaults until a validation experiment justifies changing them.
 
 | Field | Default | Use |
 |---|---:|---|
-| `earth_engine_chunk_years` | `5` | Years in each Earth Engine request |
+| `earth_engine_chunk_years` | `10` | Years in each multiband Earth Engine request |
 | `latitude_chunk` | `40` | MSWEP/Dask latitude chunk |
 | `longitude_chunk` | `40` | MSWEP/Dask longitude chunk |
+| `netcdf_compression_level` | `1` | Final NetCDF compression, from 0 (off) to 9 (smallest/slowest) |
+| `scratch_dir` | unset | Fast local parent directory for disposable future-window files |
 | `minimum_time_coverage` | `0.95` | Minimum shared calibration dates |
 | `continue_on_model_error` | `false` | Continue an exploratory ensemble after one model fails |
 | `save_reference_subsets` | `false` | Persist reference AOI subsets for audit/debugging |
 
-Smaller Earth Engine request chunks reduce request size, not the final memory
-needed by QDM. Each monthly training group must span its time samples.
+The workflow requests the three ERA5-Land temperature bands together and all
+four NEX-GDDP bands together. Reduce `earth_engine_chunk_years` to 5 if Earth
+Engine times out for a large AOI; this reduces each request, not QDM memory.
+Each monthly training group must span its time samples.
+
+For Colab, set `scratch_dir: /content/cloud-qdm-scratch`. Temporary window
+files then use fast runtime storage and no compression; continuous 2015-2100
+products are still compressed and written to `run.output_dir`. Scratch files
+are disposable and do not survive a runtime reset.
 
 ### Independent evaluation and figures
 
@@ -154,7 +163,7 @@ Zarr store. In Colab, store it once on Drive, for example:
 Inspect metadata without loading the arrays:
 
 ```bash
-cloud-qdm inspect-mswep /content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
+qdm inspect-mswep /content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
 ```
 
 Set `variable`, `latitude_name`, `longitude_name`, and `time_name` to the names
@@ -190,13 +199,13 @@ Validation reads YAML and checks names, bounds, dates, modes, and numeric
 settings without contacting Earth Engine:
 
 ```bash
-cloud-qdm validate my-run.yml
+qdm validate my-run.yml
 ```
 
 Run only after validation succeeds:
 
 ```bash
-cloud-qdm run my-run.yml
+qdm run my-run.yml
 ```
 
 The pipeline processes models sequentially. When figures are enabled, it first
@@ -213,6 +222,27 @@ continuous from 2015 through 2100 so the final-file completeness check remains
 active. Scale only after checking the complete output and logs. A stopped run
 does not automatically skip completed models; use a new `run.name` or remove
 only the incomplete run after verifying its path.
+
+### Performance expectations
+
+One configured model is not one calculation: with both scenarios and three
+windows it includes historical training for four variables, 24 future
+variable-window corrections, temporary writes, four continuous-file merges per
+scenario, summaries, and optionally figures. Runtime therefore depends strongly
+on AOI size, Earth Engine response time, Drive I/O, and figure settings.
+
+The optimized path batches multiband Earth Engine reads, writes related
+variables through one shared Dask graph, computes summaries from the saved
+files instead of rerunning QDM, and uses low final-file compression. For a fast
+production run:
+
+1. Use `scratch_dir: /content/cloud-qdm-scratch` in Colab.
+2. Keep `earth_engine_chunk_years: 10`; fall back to 5 only after a timeout.
+3. Use `netcdf_compression_level: 1`; higher levels spend more CPU for smaller files.
+4. Leave `figures.enabled: false` during correction, then make paper figures in
+   a dedicated analysis run when practical.
+5. Keep MSWEP regional and chunked, and avoid reading a global NetCDF directly
+   from mounted Drive repeatedly.
 
 ## 5. Read the outputs
 

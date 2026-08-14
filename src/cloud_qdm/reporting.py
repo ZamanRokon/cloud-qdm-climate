@@ -6,6 +6,8 @@ import json
 import logging
 import platform
 import sys
+import tempfile
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -38,9 +40,12 @@ def configure_logging(run_dir: Path) -> logging.Logger:
     return logger
 
 
-def save_netcdf(data: xr.DataArray, path: Path, attributes: dict[str, Any]) -> Path:
-    """Materialize a corrected DataArray as a compressed NetCDF file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _netcdf_payload(
+    data: xr.DataArray,
+    attributes: dict[str, Any],
+    compression_level: int,
+) -> tuple[xr.DataArray, dict[str, dict[str, Any]]]:
+    """Build a finite float32 payload and its NetCDF encoding."""
     output = data.where(np.isfinite(data)).astype(np.float32).copy()
     output.attrs.pop("_FillValue", None)
     output.attrs.pop("missing_value", None)
@@ -50,14 +55,88 @@ def save_netcdf(data: xr.DataArray, path: Path, attributes: dict[str, Any]) -> P
     output.attrs["software_version"] = __version__
     encoding = {
         output.name or "climate": {
-            "zlib": True,
-            "complevel": 4,
+            "zlib": compression_level > 0,
+            "complevel": compression_level,
             "dtype": "float32",
             "_FillValue": np.float32(np.nan),
         }
     }
+    return output, encoding
+
+
+def save_netcdf(
+    data: xr.DataArray,
+    path: Path,
+    attributes: dict[str, Any],
+    *,
+    compression_level: int = 1,
+) -> Path:
+    """Materialize a corrected DataArray as a compressed NetCDF file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    output, encoding = _netcdf_payload(data, attributes, compression_level)
     output.to_netcdf(path, engine="netcdf4", encoding=encoding)
     return path
+
+
+def save_netcdf_batch(
+    items: Iterable[tuple[xr.DataArray, Path, dict[str, Any]]],
+    *,
+    compression_level: int = 1,
+    staging_dir: Path | None = None,
+) -> list[Path]:
+    """Evaluate shared arrays once in a staging dataset, then split the files."""
+    prepared: list[tuple[xr.DataArray, Path, dict[str, dict[str, Any]]]] = []
+    paths: list[Path] = []
+    for data, path, attributes in items:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        output, encoding = _netcdf_payload(data, attributes, compression_level)
+        prepared.append((output, path, encoding))
+        paths.append(path)
+    if not prepared:
+        return paths
+    if len(prepared) == 1:
+        output, path, encoding = prepared[0]
+        output.to_netcdf(path, engine="netcdf4", encoding=encoding)
+        return paths
+
+    variable_names = [output.name for output, _, _ in prepared]
+    if any(name is None for name in variable_names) or len(set(variable_names)) != len(prepared):
+        raise ValueError("Batched NetCDF variables must have unique names.")
+    try:
+        xr.align(*(output for output, _, _ in prepared), join="exact", copy=False)
+    except ValueError as exc:
+        raise ValueError("Batched NetCDF variables must use exactly the same coordinates.") from exc
+
+    stage_parent = staging_dir or paths[0].parent
+    stage_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=".qdm-stage-", suffix=".nc", dir=stage_parent, delete=False
+    ) as handle:
+        stage_path = Path(handle.name)
+    stage_encoding = {
+        str(output.name): {
+            "zlib": False,
+            "dtype": "float32",
+            "_FillValue": np.float32(np.nan),
+        }
+        for output, _, _ in prepared
+    }
+    try:
+        dataset = xr.merge(
+            [output.to_dataset(name=str(output.name)) for output, _, _ in prepared],
+            join="exact",
+        )
+        dataset.to_netcdf(stage_path, engine="netcdf4", encoding=stage_encoding)
+        with xr.open_dataset(stage_path, chunks="auto") as staged:
+            for output, path, encoding in prepared:
+                staged[str(output.name)].to_netcdf(
+                    path,
+                    engine="netcdf4",
+                    encoding=encoding,
+                )
+    finally:
+        stage_path.unlink(missing_ok=True)
+    return paths
 
 
 def summarize(
