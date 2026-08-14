@@ -1,10 +1,13 @@
 # Cloud QDM Climate documentation
 
-Cloud QDM Climate is a reproducible Python workflow for monthly Quantile Delta
-Mapping of daily NEX-GDDP-CMIP6 temperature and precipitation. It supports an
-Earth Engine CHIRPS reference or a user-provided MSWEP file and uses
-ERA5-Land for temperature references.
+Use the document that matches the task:
 
-Start with the [technical manual](technical-manual.md), then read the
-[methodology](methodology.md) and [data-governance](data-governance.md) notes
-before producing decision-facing results.
+| Need | Read |
+|---|---|
+| Understand the project or start a small run | [README](https://github.com/ZamanRokon/cloud-qdm-climate#readme) |
+| Install, configure, run, inspect outputs, or troubleshoot | [Technical manual](technical-manual.md) |
+| Review QDM equations, assumptions, and validation | [Methodology and validation](methodology.md) |
+| Check dataset terms, attribution, or credential handling | [Data licensing and governance](data-governance.md) |
+
+Cloud QDM Climate adjusts daily NEX-GDDP-CMIP6 temperature and precipitation
+for a rectangular AOI using ERA5-Land and either CHIRPS or user-provided MSWEP.

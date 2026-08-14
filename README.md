@@ -4,185 +4,118 @@
 [![License](https://img.shields.io/badge/code%20license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10--3.13-blue.svg)](pyproject.toml)
 
-Cloud-assisted bias adjustment of daily CMIP6 temperature and precipitation
-with **Quantile Delta Mapping (QDM)**. The workflow uses a latitude/longitude
-bounding box as the area of interest, Google Earth Engine for ERA5-Land,
-CHIRPS, and NEX-GDDP-CMIP6, and Google Colab or another Python runtime for the
-actual QDM computation.
+Cloud-assisted bias adjustment of daily NEX-GDDP-CMIP6 `tas`, `tasmax`,
+`tasmin`, and `pr` with monthly Quantile Delta Mapping (QDM). Define a
+rectangular latitude/longitude area of interest (AOI); the workflow retrieves
+only the requested Earth Engine subsets and performs QDM in Google Colab or
+another Python runtime.
 
-For precipitation, users can choose either:
+This is statistical bias adjustment and grid alignment, not dynamical
+downscaling. No climate data are distributed with the repository.
 
-- **CHIRPS mode** — daily CHIRPS is queried directly from Earth Engine; or
-- **MSWEP mode** — the user supplies an authorized local/Google Drive NetCDF,
-  multi-file NetCDF collection, or Zarr store.
+## Choose a precipitation reference
 
-No climate data are included in this repository.
-
-## What runs where?
-
-| Location | Responsibility |
-|---|---|
-| Browser or local PC | Prepare configuration and, for MSWEP mode, provide the licensed file |
-| Google Drive | Persistent inputs and outputs for Colab runs |
-| Google Earth Engine | Filter and stream ERA5-Land, CHIRPS, and NEX-GDDP-CMIP6 subsets |
-| Google Colab/Python | Regrid, train/apply QDM, enforce physical constraints, summarize, and export |
-
-Earth Engine avoids manual downloads of its global archives, but the selected
-AOI and time ranges are still transferred to the Python runtime for QDM.
-
-## Scientific workflow
-
-1. Validate `min_lon`, `min_lat`, `max_lon`, and `max_lat`.
-2. Load daily reference data for a common calibration period (recommended:
-   1981–2014).
-3. Retrieve the same dates from each model's `historical` experiment.
-4. Regrid historical model data to the corresponding reference grid.
-5. Train monthly QDM independently for `tas`, `tasmax`, `tasmin`, and `pr`.
-6. Correct the historical period and future windows from 2015–2100.
-7. Enforce non-negative precipitation and `tasmin ≤ tas ≤ tasmax`.
-8. Save per-variable NetCDF files, trained adjustment parameters, run
-   provenance, and summary statistics.
-
-Temperature uses additive QDM; precipitation uses multiplicative QDM with
-optional wet-day frequency adaptation. Future data are adjusted in windows
-rather than treating 2015–2100 as one stationary distribution.
-
-## Supported online datasets
-
-| Purpose | Earth Engine collection | Variables |
+| Mode | Input | Best fit |
 |---|---|---|
-| Model historical/future | `NASA/GDDP-CMIP6` | `tas`, `tasmax`, `tasmin`, `pr` |
-| Temperature reference | `ECMWF/ERA5_LAND/DAILY_AGGR` | mean/max/min 2 m temperature |
-| Optional precipitation reference | `UCSB-CHG/CHIRPS/DAILY` | daily precipitation |
+| CHIRPS | Streamed from `UCSB-CHG/CHIRPS/DAILY` | Fully cloud-based run |
+| MSWEP | Your authorized NetCDF files or Zarr store | Work that requires MSWEP |
 
-Official catalogs: [NEX-GDDP-CMIP6](https://developers.google.com/earth-engine/datasets/catalog/NASA_GDDP-CMIP6),
-[ERA5-Land Daily Aggregated](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_DAILY_AGGR),
-[CHIRPS Daily v2](https://developers.google.com/earth-engine/datasets/catalog/UCSB-CHG_CHIRPS_DAILY),
-and [MSWEP access/documentation](https://www.gloh2o.org/).
+Both modes use ERA5-Land for daily mean, maximum, and minimum temperature.
+NEX-GDDP-CMIP6 supplies historical and future model data. Earth Engine avoids
+manual global-archive downloads, but AOI subsets are still transferred to the
+Python runtime.
 
-The Earth Engine NEX-GDDP-CMIP6 collection supports `ssp245` and `ssp585`.
-The input is already statistically downscaled to approximately 0.25°; this
-project performs an additional observation-based bias adjustment and grid
-alignment, not dynamical downscaling.
+## Quick start
 
-## Quick start in Google Colab
-
-Open [`notebooks/cloud_qdm_colab.ipynb`](notebooks/cloud_qdm_colab.ipynb) in
-Colab, then:
-
-1. Mount Google Drive.
-2. Clone this repository.
-3. Install `.[cloud]`.
-4. Authenticate Earth Engine.
-5. Copy and edit one example configuration.
-6. Run `cloud-qdm validate` followed by `cloud-qdm run`.
-
-For MSWEP, place the file in Drive once, for example:
-
-```text
-/content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
-```
-
-## Local installation
+For Colab, open
+[`notebooks/cloud_qdm_colab.ipynb`](notebooks/cloud_qdm_colab.ipynb) and run its
+cells in order. For Linux or WSL:
 
 ```bash
 git clone https://github.com/ZamanRokon/cloud-qdm-climate.git
 cd cloud-qdm-climate
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[cloud,test]"
+python -m pip install -e ".[cloud]"
 ```
 
-Validate a configuration without contacting Earth Engine:
+Then:
+
+1. Copy [`configs/example_chirps.yml`](configs/example_chirps.yml) or
+   [`configs/example_mswep.yml`](configs/example_mswep.yml).
+2. Set the Earth Engine project, output directory, AOI, models, scenarios, and
+   periods.
+3. In MSWEP mode, set the file path, variable name, coordinate names, units
+   scale, and daily-aggregation option.
+4. Authenticate Earth Engine once in the runtime.
+5. Validate, then run:
 
 ```bash
-cloud-qdm validate configs/example_chirps.yml
+cloud-qdm validate my-run.yml
+cloud-qdm run my-run.yml
 ```
 
-Inspect an MSWEP file's variables and coordinates:
+Inspect an unfamiliar MSWEP file before configuring it:
 
 ```bash
 cloud-qdm inspect-mswep /path/to/mswep_daily.nc
 ```
 
-Run:
+The [technical manual](docs/technical-manual.md) gives the exact Colab setup,
+configuration field reference, operating guidance, and troubleshooting.
 
-```bash
-cloud-qdm run configs/example_chirps.yml
-```
+## Implemented method
 
-## Configuration
+| Variable | Reference | QDM form | Working units | Post-processing |
+|---|---|---|---|---|
+| `tas` | ERA5-Land | additive | K | temperature ordering |
+| `tasmax` | ERA5-Land | additive | K | temperature ordering |
+| `tasmin` | ERA5-Land | additive | K | temperature ordering |
+| `pr` | CHIRPS or MSWEP | multiplicative | mm d-1 | wet-day adaptation; clip at zero |
 
-The AOI is a rectangle in EPSG:4326:
+QDM is trained independently by model, variable, grid cell, and calendar
+month. Historical model fields are bilinearly interpolated to each reference
+grid before training. The fitted parameters are reused for configured future
+windows. See [methodology and validation](docs/methodology.md) for equations,
+assumptions, and required evaluation.
 
-```yaml
-aoi:
-  min_lon: 89.0
-  min_lat: 23.0
-  max_lon: 93.0
-  max_lat: 26.5
-```
-
-Choose the precipitation reference:
-
-```yaml
-precipitation_reference:
-  mode: chirps
-```
-
-or:
-
-```yaml
-precipitation_reference:
-  mode: mswep
-  path: /content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
-  variable: precipitation
-  latitude_name: lat
-  longitude_name: lon
-  time_name: time
-  unit_scale: 1.0
-  aggregate_to_daily: false
-```
-
-Complete examples are in [`configs/`](configs/).
-
-## Output layout
+## Output
 
 ```text
 outputs/<run-name>/
-├── adjustments/<model>/qdm_<variable>.nc
-├── corrected/<model>/historical/calibration/<variable>.nc
-├── corrected/<model>/<scenario>/<window>/<variable>.nc
-├── logs/pipeline.log
-├── run-config.yml
-├── run-manifest.json
-└── summary.csv
+|-- adjustments/<model>/qdm_<variable>.nc
+|-- corrected/<model>/historical/calibration/<variable>.nc
+|-- corrected/<model>/<scenario>/<window>/<variable>.nc
+|-- logs/pipeline.log
+|-- run-config.yml
+|-- run-manifest.json
+`-- summary.csv
 ```
 
-## Important limitations
+The normalized configuration, manifest, saved adjustment parameters, NetCDF
+attributes, and summary table provide the run audit trail.
 
-- QDM reduces distributional bias; it does not correct every model error or
-  create independent fine-scale weather dynamics.
-- Results depend strongly on reference quality, calibration period, model
-  selection, wet-day treatment, and regridding.
-- Independently corrected temperature variables require the included physical
-  consistency step.
-- Long return periods and impact decisions require separate validation.
-- Colab is appropriate for personal and small-team jobs, not a reliable
-  unattended multi-user backend.
-- MSWEP is not redistributed here and has separate access and licensing terms.
+## Know before use
+
+- QDM corrects marginal distributions; it does not repair every model error or
+  preserve multivariable and spatial dependence by itself.
+- A finer reference grid does not create independent fine-scale dynamics.
+- Bilinear precipitation regridding is not conservative.
+- Extremes, wet-day behavior, trend preservation, and held-out historical
+  performance require study-specific validation.
+- Colab is suitable for interactive AOI-scale work, not an unattended service.
 
 Do not use unvalidated output as the sole basis for safety-critical,
 engineering, financial, or regulatory decisions.
 
-## Documentation
+## Documentation and license
 
-- [Technical manual](docs/technical-manual.md)
-- [Methodology and validation](docs/methodology.md)
-- [Data licensing and governance](docs/data-governance.md)
+- [Technical manual](docs/technical-manual.md) — setup, configuration, running,
+  outputs, and troubleshooting
+- [Methodology and validation](docs/methodology.md) — algorithm, assumptions,
+  limitations, and evaluation
+- [Data licensing and governance](docs/data-governance.md) — provider terms,
+  attribution, and credentials
 
-## License
-
-The software and documentation are licensed under Apache-2.0. Dataset licenses
-remain separate; see [`NOTICE`](NOTICE) and the data-governance guide.
+Code and documentation are Apache-2.0 licensed. Dataset terms remain separate;
+see [`NOTICE`](NOTICE).
