@@ -19,6 +19,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Expanded the scientific manual with explicit QDM equations, assumptions, and
   validation requirements.
 - Made precipitation wet-day randomization reproducible with `qdm.random_seed`.
+- Added explicit MSWEP NaN/infinity handling, padded model retrieval to avoid
+  artificial interpolation-edge gaps, and non-finite output quality metrics.
+- Future windows are now temporary processing/analysis segments; final outputs
+  are continuous daily 2015-2100 NetCDF files per model, scenario, and variable.
+- Normalized MSWEP run configurations now preserve the reloadable input schema.
 
 ## [0.1.0] - 2026-08-14
 

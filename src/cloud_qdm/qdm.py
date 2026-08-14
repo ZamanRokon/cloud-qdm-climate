@@ -97,7 +97,14 @@ def apply_qdm(
     except Exception as exc:
         raise QDMError(f"QDM adjustment failed for {variable}: {exc}") from exc
     if variable == "pr":
-        corrected = corrected.clip(min=0)
+        finite_input = np.isfinite(simulation)
+        corrected = xr.where(
+            finite_input,
+            xr.where(np.isfinite(corrected), corrected, 0.0),
+            np.nan,
+        ).clip(min=0)
+    else:
+        corrected = corrected.where(np.isfinite(corrected))
     corrected.name = variable
     corrected.attrs.update(
         {

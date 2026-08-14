@@ -48,6 +48,38 @@ def test_precipitation_qdm_preserves_multiplicative_change() -> None:
     assert abs(float((corrected - expected).mean())) < 0.1
 
 
+def test_precipitation_output_cleans_algorithmic_non_finite_values() -> None:
+    class NonFiniteAdjustment:
+        @staticmethod
+        def adjust(simulation: xr.DataArray, **_kwargs) -> xr.DataArray:
+            return xr.DataArray(
+                np.array([np.nan, np.inf, -1.0, np.inf])[:, None, None],
+                dims=simulation.dims,
+                coords=simulation.coords,
+            )
+
+    simulation = xr.DataArray(
+        np.array([1.0, 2.0, 3.0, np.nan])[:, None, None],
+        dims=("time", "lat", "lon"),
+        coords={
+            "time": pd.date_range("2000-01-01", periods=4),
+            "lat": [24.0],
+            "lon": [90.0],
+        },
+        attrs={"units": "mm d-1"},
+    )
+
+    corrected = apply_qdm(
+        NonFiniteAdjustment(),
+        simulation,
+        variable="pr",
+        config=QDMConfig(),
+    ).compute()
+
+    np.testing.assert_array_equal(corrected.values[:3, 0, 0], [0.0, 0.0, 0.0])
+    assert np.isnan(corrected.values[3, 0, 0])
+
+
 def test_qdm_seed_is_stable_without_leaking_numpy_state() -> None:
     time = pd.date_range("2000-01-01", periods=10, freq="D")
     data = xr.DataArray(

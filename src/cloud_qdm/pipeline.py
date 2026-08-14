@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import gc
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
+import pandas as pd
+import xarray as xr
 import yaml
 
-from cloud_qdm.config import RunConfig
+from cloud_qdm.config import Period, RunConfig
 from cloud_qdm.coordinates import (
     align_calibration_time,
     enforce_temperature_ordering,
@@ -39,6 +42,8 @@ from cloud_qdm.sources import (
 
 DataByVariable = dict[str, Any]
 EvaluationData = tuple[DataByVariable, DataByVariable, DataByVariable]
+MODEL_FETCH_PADDING_DEGREES = 0.5
+FUTURE_OUTPUT_LABEL = "2015-2100"
 
 
 def _load_references(config: RunConfig, logger) -> DataByVariable:
@@ -71,6 +76,12 @@ def _load_references(config: RunConfig, logger) -> DataByVariable:
                 "lon": config.processing.longitude_chunk,
             },
         )
+        replaced = int(references["pr"].attrs.get("non_finite_values_replaced", 0))
+        if replaced:
+            logger.warning(
+                "Replaced %s non-finite MSWEP values with zero under the configured policy",
+                f"{replaced:,}",
+            )
     return references
 
 
@@ -96,7 +107,7 @@ def _fetch_model(
         model=model,
         scenario=scenario,
         period=period,
-        bounds=config.aoi,
+        bounds=config.aoi.padded(MODEL_FETCH_PADDING_DEGREES),
         chunk_years=config.processing.earth_engine_chunk_years,
         grid_label=config.grid_labels.get(model),
     )
@@ -144,6 +155,8 @@ def _save_period(
     period,
     corrected: DataByVariable,
     summary_rows: list[dict[str, Any]],
+    output_root: Path | None = None,
+    record_summary: bool = True,
 ) -> list[str]:
     output_paths = []
     provenance = {
@@ -157,26 +170,95 @@ def _save_period(
         "precipitation_reference": config.precipitation_reference.mode,
         "model_source_collection": config.earth_engine.gddp_collection,
     }
+    root = output_root or config.run_dir / "corrected"
     for variable, data in corrected.items():
-        output_path = (
-            config.run_dir / "corrected" / model / scenario / period.label / f"{variable}.nc"
-        )
+        output_path = root / model / scenario / period.label / f"{variable}.nc"
         save_netcdf(
             data,
             output_path,
             {**provenance, "reference_source": _reference_source(config, variable)},
         )
-        summary_rows.append(
-            summarize(
-                data,
-                model=model,
-                scenario=scenario,
-                period=period.label,
-                variable=variable,
-                output_path=output_path,
+        if record_summary:
+            summary_rows.append(
+                summarize(
+                    data,
+                    model=model,
+                    scenario=scenario,
+                    period=period.label,
+                    variable=variable,
+                    output_path=output_path,
+                )
             )
-        )
         output_paths.append(str(output_path))
+    return output_paths
+
+
+def _validate_complete_future_time(data: xr.DataArray) -> None:
+    """Require one unique daily value for every date from 2015 through 2100."""
+    observed = pd.DatetimeIndex(pd.to_datetime(data["time"].values)).normalize()
+    expected = pd.date_range("2015-01-01", "2100-12-31", freq="D")
+    if observed.has_duplicates:
+        raise RuntimeError("Merged future output contains duplicate dates.")
+    if not observed.equals(expected):
+        missing = expected.difference(observed)
+        unexpected = observed.difference(expected)
+        raise RuntimeError(
+            "Merged future output is not complete for 2015-01-01 to 2100-12-31 "
+            f"(missing={len(missing):,}, unexpected={len(unexpected):,})."
+        )
+
+
+def _remove_segment_files(paths: list[Path], segment_root: Path) -> None:
+    """Delete only successfully merged temporary files and their empty directories."""
+    for path in paths:
+        path.unlink()
+    directories = sorted(
+        {path.parent for path in paths}, key=lambda item: len(item.parts), reverse=True
+    )
+    for directory in directories:
+        directory.rmdir()
+    current = directories[-1].parent if directories else segment_root
+    while current != segment_root.parent and current.exists():
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+
+
+def _merge_future_segments(
+    config: RunConfig,
+    *,
+    model: str,
+    scenario: str,
+    segment_paths: dict[str, list[Path]],
+    summary_rows: list[dict[str, Any]],
+) -> list[str]:
+    """Merge internal windows into one daily 2015-2100 NetCDF per variable."""
+    final_period = Period(date(2015, 1, 1), date(2100, 12, 31), FUTURE_OUTPUT_LABEL)
+    output_paths: list[str] = []
+    all_segments = [path for paths in segment_paths.values() for path in paths]
+    for variable in VARIABLES:
+        paths = segment_paths.get(variable, [])
+        if len(paths) != len(config.future_windows):
+            raise RuntimeError(
+                f"Expected {len(config.future_windows)} {variable} segments for "
+                f"{model}/{scenario}; found {len(paths)}."
+            )
+        with xr.open_mfdataset(paths, combine="by_coords", chunks="auto") as dataset:
+            merged = dataset[variable].sortby("time")
+            _validate_complete_future_time(merged)
+            output_paths.extend(
+                _save_period(
+                    config,
+                    model=model,
+                    scenario=scenario,
+                    period=final_period,
+                    corrected={variable: merged},
+                    summary_rows=summary_rows,
+                )
+            )
+    _remove_segment_files(all_segments, config.run_dir / ".segments")
     return output_paths
 
 
@@ -346,62 +428,88 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                 )
                 manifest["models"][model]["figures"].extend(map(str, figure_paths))
 
-            periods = [("historical", config.calibration, historical)]
-            periods.extend(
-                (scenario, period, None)
-                for scenario in config.scenarios
-                for period in config.future_windows
+            logger.info("Correcting %s/historical/%s", model, config.calibration.label)
+            baseline_corrected, _ = _correct_period(
+                config,
+                model=model,
+                scenario="historical",
+                period=config.calibration,
+                references=references,
+                adjustments=adjustments,
+                preloaded=historical,
             )
-            baseline_corrected = None
-            for scenario, period, preloaded in periods:
-                logger.info("Correcting %s/%s/%s", model, scenario, period.label)
-                corrected, model_inputs = _correct_period(
+            manifest["models"][model]["outputs"].extend(
+                _save_period(
                     config,
                     model=model,
-                    scenario=scenario,
-                    period=period,
-                    references=references,
-                    adjustments=adjustments,
-                    preloaded=preloaded,
+                    scenario="historical",
+                    period=config.calibration,
+                    corrected=baseline_corrected,
+                    summary_rows=summary_rows,
                 )
-                manifest["models"][model]["outputs"].extend(
-                    _save_period(
+            )
+
+            for scenario in config.scenarios:
+                segment_paths: dict[str, list[Path]] = {variable: [] for variable in VARIABLES}
+                for period in config.future_windows:
+                    logger.info("Correcting %s/%s/%s", model, scenario, period.label)
+                    corrected, model_inputs = _correct_period(
+                        config,
+                        model=model,
+                        scenario=scenario,
+                        period=period,
+                        references=references,
+                        adjustments=adjustments,
+                    )
+                    saved_segments = _save_period(
                         config,
                         model=model,
                         scenario=scenario,
                         period=period,
                         corrected=corrected,
                         summary_rows=summary_rows,
+                        output_root=config.run_dir / ".segments",
+                        record_summary=False,
                     )
-                )
-                if scenario == "historical":
-                    baseline_corrected = corrected
-                elif config.figures.enabled:
-                    if baseline_corrected is None:
-                        raise RuntimeError("Historical baseline was not available for figures.")
-                    figure_paths, rows = make_projection_figures(
-                        historical,
-                        baseline_corrected,
-                        model_inputs,
-                        corrected,
+                    for path_text in saved_segments:
+                        path = Path(path_text)
+                        segment_paths[path.stem].append(path)
+
+                    if config.figures.enabled:
+                        figure_paths, rows = make_projection_figures(
+                            historical,
+                            baseline_corrected,
+                            model_inputs,
+                            corrected,
+                            model=model,
+                            scenario=scenario,
+                            period=period.label,
+                            output_dir=(
+                                config.run_dir
+                                / "figures"
+                                / "by-model"
+                                / model
+                                / "projection"
+                                / scenario
+                                / period.label
+                            ),
+                            settings=config.figures,
+                        )
+                        manifest["models"][model]["figures"].extend(map(str, figure_paths))
+                        model_projection_rows.extend(rows)
+                    del corrected, model_inputs
+                    gc.collect()
+
+                logger.info("Merging %s/%s into continuous 2015-2100 files", model, scenario)
+                manifest["models"][model]["outputs"].extend(
+                    _merge_future_segments(
+                        config,
                         model=model,
                         scenario=scenario,
-                        period=period.label,
-                        output_dir=(
-                            config.run_dir
-                            / "figures"
-                            / "by-model"
-                            / model
-                            / "projection"
-                            / scenario
-                            / period.label
-                        ),
-                        settings=config.figures,
+                        segment_paths=segment_paths,
+                        summary_rows=summary_rows,
                     )
-                    manifest["models"][model]["figures"].extend(map(str, figure_paths))
-                    model_projection_rows.extend(rows)
-                del corrected
-                gc.collect()
+                )
             manifest["models"][model]["status"] = "complete"
             evaluation_rows.extend(model_evaluation_rows)
             projection_rows.extend(model_projection_rows)
