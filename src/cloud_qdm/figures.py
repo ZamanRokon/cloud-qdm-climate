@@ -52,10 +52,10 @@ def _pyplot():
 def _style(plt) -> None:
     plt.rcParams.update(
         {
-            "axes.grid": False,
+            "axes.grid": True,
             "axes.spines.top": False,
             "axes.spines.right": False,
-            "figure.dpi": 120,
+            "figure.dpi": 450,
             "font.family": "DejaVu Sans",
             "font.size": 9,
             "legend.frameon": False,
