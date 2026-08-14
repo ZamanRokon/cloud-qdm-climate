@@ -14,6 +14,11 @@ from cloud_qdm.coordinates import (
     enforce_temperature_ordering,
     regrid_to_reference,
 )
+from cloud_qdm.figures import (
+    make_ensemble_figures,
+    make_evaluation_figures,
+    make_projection_figures,
+)
 from cloud_qdm.qdm import apply_qdm, save_adjustment, train_qdm
 from cloud_qdm.reporting import (
     base_manifest,
@@ -33,6 +38,7 @@ from cloud_qdm.sources import (
 )
 
 DataByVariable = dict[str, Any]
+EvaluationData = tuple[DataByVariable, DataByVariable, DataByVariable]
 
 
 def _load_references(config: RunConfig, logger) -> DataByVariable:
@@ -105,8 +111,9 @@ def _correct_period(
     references: DataByVariable,
     adjustments: DataByVariable,
     preloaded: DataByVariable | None = None,
-) -> DataByVariable:
+) -> tuple[DataByVariable, DataByVariable]:
     corrected = {}
+    model_inputs = {}
     for variable in VARIABLES:
         if preloaded is not None:
             model_on_reference = preloaded[variable]
@@ -115,6 +122,7 @@ def _correct_period(
                 config, model=model, scenario=scenario, period=period, variable=variable
             )
             model_on_reference = regrid_to_reference(raw, references[variable])
+        model_inputs[variable] = model_on_reference
         corrected[variable] = apply_qdm(
             adjustments[variable],
             model_on_reference,
@@ -125,7 +133,7 @@ def _correct_period(
         corrected["tas"], corrected["tasmax"], corrected["tasmin"]
     )
     corrected.update(ordered)
-    return corrected
+    return corrected, model_inputs
 
 
 def _save_period(
@@ -178,9 +186,12 @@ def _train_model(
     model: str,
     references: DataByVariable,
     logger,
-) -> tuple[DataByVariable, DataByVariable]:
+) -> tuple[DataByVariable, DataByVariable, EvaluationData | None]:
     adjustments = {}
     historical_on_reference = {}
+    evaluation_references = {}
+    evaluation_raw = {}
+    evaluation_corrected = {}
     for variable in VARIABLES:
         logger.info("Fetching historical %s/%s", model, variable)
         historical = _fetch_model(
@@ -198,13 +209,74 @@ def _train_model(
         )
         historical_on_reference[variable] = historical
 
+        if config.figures.enabled and config.evaluation:
+            training_reference = reference.sel(
+                time=slice(
+                    config.evaluation.training.start.isoformat(),
+                    config.evaluation.training.end.isoformat(),
+                )
+            )
+            training_historical = historical.sel(
+                time=slice(
+                    config.evaluation.training.start.isoformat(),
+                    config.evaluation.training.end.isoformat(),
+                )
+            )
+            validation_reference = reference.sel(
+                time=slice(
+                    config.evaluation.validation.start.isoformat(),
+                    config.evaluation.validation.end.isoformat(),
+                )
+            )
+            validation_historical = historical.sel(
+                time=slice(
+                    config.evaluation.validation.start.isoformat(),
+                    config.evaluation.validation.end.isoformat(),
+                )
+            )
+            training_reference, training_historical = align_calibration_time(
+                training_reference,
+                training_historical,
+                minimum_coverage=config.processing.minimum_time_coverage,
+            )
+            validation_reference, validation_historical = align_calibration_time(
+                validation_reference,
+                validation_historical,
+                minimum_coverage=config.processing.minimum_time_coverage,
+            )
+            logger.info("Training evaluation QDM %s/%s", model, variable)
+            evaluation_adjustment = train_qdm(
+                training_reference,
+                training_historical,
+                variable=variable,
+                config=config.qdm,
+            )
+            evaluation_references[variable] = validation_reference
+            evaluation_raw[variable] = validation_historical
+            evaluation_corrected[variable] = apply_qdm(
+                evaluation_adjustment,
+                validation_historical,
+                variable=variable,
+                config=config.qdm,
+            )
+
         logger.info("Training QDM %s/%s", model, variable)
         adjustment = train_qdm(reference, historical, variable=variable, config=config.qdm)
         adjustments[variable] = adjustment
         path = config.run_dir / "adjustments" / model / f"qdm_{variable}.nc"
         path.parent.mkdir(parents=True, exist_ok=True)
         save_adjustment(adjustment, str(path))
-    return adjustments, historical_on_reference
+    evaluation = None
+    if config.figures.enabled and config.evaluation:
+        evaluation_corrected.update(
+            enforce_temperature_ordering(
+                evaluation_corrected["tas"],
+                evaluation_corrected["tasmax"],
+                evaluation_corrected["tasmin"],
+            )
+        )
+        evaluation = (evaluation_references, evaluation_raw, evaluation_corrected)
+    return adjustments, historical_on_reference, evaluation
 
 
 def run_pipeline(config: RunConfig) -> dict[str, Any]:
@@ -213,6 +285,7 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
     logger = configure_logging(config.run_dir)
     manifest_path = config.run_dir / "run-manifest.json"
     manifest = base_manifest()
+    manifest["figures"] = []
     manifest["sources"] = {
         "model": config.earth_engine.gddp_collection,
         "temperature_reference": config.earth_engine.era5_collection,
@@ -244,23 +317,45 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
             )
 
     summary_rows: list[dict[str, Any]] = []
+    evaluation_rows: list[dict[str, Any]] = []
+    projection_rows: list[dict[str, Any]] = []
     for model in config.models:
         logger.info("Processing model %s", model)
-        manifest["models"][model] = {"status": "running", "outputs": [], "error": None}
+        manifest["models"][model] = {
+            "status": "running",
+            "outputs": [],
+            "figures": [],
+            "error": None,
+        }
         write_manifest(manifest, manifest_path)
         try:
-            adjustments, historical = _train_model(
+            model_evaluation_rows: list[dict[str, Any]] = []
+            model_projection_rows: list[dict[str, Any]] = []
+            adjustments, historical, evaluation = _train_model(
                 config, model=model, references=references, logger=logger
             )
+            if config.figures.enabled and config.evaluation and evaluation:
+                logger.info("Generating independent evaluation figures for %s", model)
+                figure_paths, model_evaluation_rows = make_evaluation_figures(
+                    *evaluation,
+                    model=model,
+                    period=config.evaluation.validation.label,
+                    output_dir=config.run_dir / "figures" / "by-model" / model / "evaluation",
+                    settings=config.figures,
+                    wet_day_threshold=config.qdm.wet_day_threshold_mm,
+                )
+                manifest["models"][model]["figures"].extend(map(str, figure_paths))
+
             periods = [("historical", config.calibration, historical)]
             periods.extend(
                 (scenario, period, None)
                 for scenario in config.scenarios
                 for period in config.future_windows
             )
+            baseline_corrected = None
             for scenario, period, preloaded in periods:
                 logger.info("Correcting %s/%s/%s", model, scenario, period.label)
-                corrected = _correct_period(
+                corrected, model_inputs = _correct_period(
                     config,
                     model=model,
                     scenario=scenario,
@@ -279,9 +374,37 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                         summary_rows=summary_rows,
                     )
                 )
+                if scenario == "historical":
+                    baseline_corrected = corrected
+                elif config.figures.enabled:
+                    if baseline_corrected is None:
+                        raise RuntimeError("Historical baseline was not available for figures.")
+                    figure_paths, rows = make_projection_figures(
+                        historical,
+                        baseline_corrected,
+                        model_inputs,
+                        corrected,
+                        model=model,
+                        scenario=scenario,
+                        period=period.label,
+                        output_dir=(
+                            config.run_dir
+                            / "figures"
+                            / "by-model"
+                            / model
+                            / "projection"
+                            / scenario
+                            / period.label
+                        ),
+                        settings=config.figures,
+                    )
+                    manifest["models"][model]["figures"].extend(map(str, figure_paths))
+                    model_projection_rows.extend(rows)
                 del corrected
                 gc.collect()
             manifest["models"][model]["status"] = "complete"
+            evaluation_rows.extend(model_evaluation_rows)
+            projection_rows.extend(model_projection_rows)
             logger.info("Completed model %s", model)
         except Exception as exc:
             manifest["models"][model]["status"] = "failed"
@@ -309,6 +432,15 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
         if all(item["status"] == "complete" for item in manifest["models"].values())
         else "partial"
     )
+    if config.figures.enabled:
+        logger.info("Generating cross-model paper figures")
+        figure_paths = make_ensemble_figures(
+            evaluation_rows,
+            projection_rows,
+            output_dir=config.run_dir / "figures" / "core",
+            settings=config.figures,
+        )
+        manifest["figures"] = [str(path) for path in figure_paths]
     manifest["finished_utc"] = datetime.now(UTC).isoformat()
     write_summary(summary_rows, config.run_dir / "summary.csv")
     write_manifest(manifest, manifest_path)

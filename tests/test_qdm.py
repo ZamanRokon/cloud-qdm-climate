@@ -6,7 +6,7 @@ import xarray as xr
 pytest.importorskip("xsdba")
 
 from cloud_qdm.config import QDMConfig
-from cloud_qdm.qdm import apply_qdm, train_qdm
+from cloud_qdm.qdm import _numpy_seed, _stable_seed, apply_qdm, train_qdm
 
 
 def test_temperature_qdm_reduces_simple_additive_bias() -> None:
@@ -46,3 +46,56 @@ def test_precipitation_qdm_preserves_multiplicative_change() -> None:
 
     expected = reference * 1.25
     assert abs(float((corrected - expected).mean())) < 0.1
+
+
+def test_qdm_seed_is_stable_without_leaking_numpy_state() -> None:
+    time = pd.date_range("2000-01-01", periods=10, freq="D")
+    data = xr.DataArray(
+        np.ones((10, 1, 1)),
+        dims=("time", "lat", "lon"),
+        coords={"time": time, "lat": [24.0], "lon": [90.0]},
+    )
+    config = QDMConfig(random_seed=123)
+    seed = _stable_seed(config, "pr", data, "train")
+    assert seed == _stable_seed(config, "pr", data, "train")
+
+    np.random.seed(9)
+    expected = np.random.random()
+    np.random.seed(9)
+    with _numpy_seed(seed):
+        first = np.random.random()
+    observed = np.random.random()
+    with _numpy_seed(seed):
+        second = np.random.random()
+    assert first == second
+    assert observed == expected
+
+
+def test_wet_day_frequency_training_is_reproducible() -> None:
+    time = pd.date_range("2000-01-01", "2002-12-31", freq="D")
+    day = np.arange(len(time))
+    reference = xr.DataArray(
+        np.where(day % 3 == 0, 2.0, 0.0)[:, None, None],
+        dims=("time", "lat", "lon"),
+        coords={"time": time, "lat": [24.0], "lon": [90.0]},
+        attrs={"units": "mm d-1"},
+    )
+    historical = xr.DataArray(
+        np.where(day % 7 == 0, 4.0, 0.0)[:, None, None],
+        dims=reference.dims,
+        coords=reference.coords,
+        attrs={"units": "mm d-1"},
+    )
+    config = QDMConfig(nquantiles=10, random_seed=2026)
+
+    first = train_qdm(reference, historical, variable="pr", config=config)
+    second = train_qdm(reference, historical, variable="pr", config=config)
+    different_seed = train_qdm(
+        reference,
+        historical,
+        variable="pr",
+        config=QDMConfig(nquantiles=10, random_seed=2027),
+    )
+
+    xr.testing.assert_identical(first.ds, second.ds)
+    assert not first.ds.identical(different_seed.ds)

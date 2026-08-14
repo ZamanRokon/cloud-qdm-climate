@@ -7,4 +7,5 @@ nav:
   - Home: index.md
   - Technical manual: technical-manual.md
   - Methodology: methodology.md
+  - Paper figures: paper-figures.md
   - Data governance: data-governance.md

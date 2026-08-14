@@ -41,8 +41,9 @@ python -m pip install -e ".[cloud]"
 
 Then:
 
-1. Copy [`configs/example_chirps.yml`](configs/example_chirps.yml) or
-   [`configs/example_mswep.yml`](configs/example_mswep.yml).
+1. Copy [`configs/example_chirps.yml`](configs/example_chirps.yml),
+   [`configs/example_mswep.yml`](configs/example_mswep.yml), or the
+   publication-oriented [`configs/example_paper.yml`](configs/example_paper.yml).
 2. Set the Earth Engine project, output directory, AOI, models, scenarios, and
    periods.
 3. In MSWEP mode, set the file path, variable name, coordinate names, units
@@ -79,6 +80,22 @@ grid before training. The fitted parameters are reused for configured future
 windows. See [methodology and validation](docs/methodology.md) for equations,
 assumptions, and required evaluation.
 
+## Paper figures
+
+Setting `figures.enabled: true` activates a held-out historical evaluation and
+the publication figure suite. The configuration must provide chronological,
+non-overlapping `evaluation.training` and `evaluation.validation` periods
+inside the full calibration period. The pipeline fits a temporary evaluation
+QDM on the first period, evaluates it on the later period, and then refits the
+production QDM on the complete calibration period.
+
+Outputs include Taylor diagrams, normalized skill heatmaps, seasonal cycles,
+Q-Q and quantile-bias panels, spatial bias maps, wet-day diagnostics, annual
+extremes, dependence matrices, future change-signal plots, change maps, annual
+projection series, and multi-model summaries. PNG, vector PDF, and SVG are
+supported. See the [paper-figure guide](docs/paper-figures.md) before choosing
+main-text figures or writing captions.
+
 ## Output
 
 ```text
@@ -86,6 +103,9 @@ outputs/<run-name>/
 |-- adjustments/<model>/qdm_<variable>.nc
 |-- corrected/<model>/historical/calibration/<variable>.nc
 |-- corrected/<model>/<scenario>/<window>/<variable>.nc
+|-- figures/core/
+|-- figures/by-model/<model>/evaluation/
+|-- figures/by-model/<model>/projection/<scenario>/<window>/
 |-- logs/pipeline.log
 |-- run-config.yml
 |-- run-manifest.json
@@ -114,6 +134,8 @@ engineering, financial, or regulatory decisions.
   outputs, and troubleshooting
 - [Methodology and validation](docs/methodology.md) — algorithm, assumptions,
   limitations, and evaluation
+- [Paper-figure guide](docs/paper-figures.md) — figure catalog, interpretation,
+  caption starters, and publication cautions
 - [Data licensing and governance](docs/data-governance.md) — provider terms,
   attribution, and credentials
 

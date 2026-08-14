@@ -46,6 +46,7 @@ qdm:
   group: time.month
   wet_day_threshold_mm: 0.1
   adapt_wet_day_frequency: true
+  random_seed: 42
   interpolation: linear
   extrapolation: constant
 

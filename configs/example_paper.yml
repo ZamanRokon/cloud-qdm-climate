@@ -1,5 +1,5 @@
 run:
-  name: bangladesh-mswep-example
+  name: bangladesh-paper-example
   output_dir: /content/drive/MyDrive/cloud-qdm/outputs
 
 earth_engine:
@@ -11,10 +11,22 @@ aoi:
   max_lon: 93.0
   max_lat: 26.5
 
+# The production adjustment uses this complete period.
 calibration:
   start: 1981-01-01
   end: 2014-12-31
   label: calibration
+
+# Paper figures use a separate fit and held-out evaluation.
+evaluation:
+  training:
+    start: 1981-01-01
+    end: 2004-12-31
+    label: evaluation-training
+  validation:
+    start: 2005-01-01
+    end: 2014-12-31
+    label: independent-evaluation
 
 future_windows:
   - start: 2015-01-01
@@ -36,14 +48,7 @@ scenarios:
   - ssp585
 
 precipitation_reference:
-  mode: mswep
-  path: /content/drive/MyDrive/cloud-qdm/inputs/mswep_daily.nc
-  variable: precipitation
-  latitude_name: lat
-  longitude_name: lon
-  time_name: time
-  unit_scale: 1.0
-  aggregate_to_daily: false
+  mode: chirps
 
 qdm:
   nquantiles: 50
@@ -61,3 +66,10 @@ processing:
   minimum_time_coverage: 0.95
   continue_on_model_error: false
   save_reference_subsets: false
+
+figures:
+  enabled: true
+  formats:
+    - png
+    - pdf
+  dpi: 300
