@@ -91,12 +91,15 @@ inside the full calibration period. The pipeline fits a temporary evaluation
 QDM on the first period, evaluates it on the later period, and then refits the
 production QDM on the complete calibration period.
 
-Outputs include Taylor diagrams, normalized skill heatmaps, seasonal cycles,
-Q-Q and quantile-bias panels, spatial bias maps, wet-day diagnostics, annual
-extremes, dependence matrices, future change-signal plots, change maps, annual
-projection series, and multi-model summaries. PNG, vector PDF, and SVG are
-supported. See the [paper-figure guide](docs/paper-figures.md) before choosing
-main-text figures or writing captions.
+The default paper run writes only the cross-model core suite: an eight-panel,
+first-quadrant Taylor diagram (four variables before/after QDM), a normalized
+skill heatmap, and a multi-model future-change figure. PNG output is 600 DPI.
+Set `figures.model_by_model: true` only when the larger per-model diagnostic
+suite is needed; it adds seasonal cycles, Q-Q and quantile-bias panels, spatial
+bias maps, wet-day diagnostics, annual extremes, dependence matrices, future
+change-signal plots, change maps, and annual projection series. See the
+[paper-figure guide](docs/paper-figures.md) before choosing main-text figures or
+writing captions.
 
 ## Output
 
@@ -106,8 +109,8 @@ outputs/<run-name>/
 |-- corrected/<model>/historical/calibration/<variable>.nc
 |-- corrected/<model>/<scenario>/2015-2100/<variable>.nc
 |-- figures/core/
-|-- figures/by-model/<model>/evaluation/
-|-- figures/by-model/<model>/projection/<scenario>/<window>/
+|-- figures/by-model/<model>/evaluation/                       # optional
+|-- figures/by-model/<model>/projection/<scenario>/<window>/   # optional
 |-- logs/pipeline.log
 |-- run-config.yml
 |-- run-manifest.json

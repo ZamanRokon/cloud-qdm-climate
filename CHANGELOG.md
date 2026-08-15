@@ -13,6 +13,15 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Changed
 
+- Rebuilt Taylor diagrams as publication-style first-quadrant, before/after
+  panels with correlation, normalized standard deviation, centered-RMSD
+  contours, shared model encoding, and collision-safe layout.
+- Core cross-model figures now default to 600-DPI PNG; the much larger
+  model-by-model suite is controlled by `figures.model_by_model` and defaults
+  to false.
+- Removed the global plot grid introduced in PR #9 and tightened multi-panel,
+  heatmap, legend, title, and tick-label layouts.
+- Expanded CI to test every advertised Python version (3.10-3.13).
 - Renamed the installed command from `cloud-qdm` to the shorter `qdm`.
 - Batched multiband Earth Engine reads and related NetCDF writes, stopped
   recomputing QDM for summaries, and added fast local scratch and compression

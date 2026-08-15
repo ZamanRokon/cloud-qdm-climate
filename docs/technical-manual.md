@@ -137,8 +137,9 @@ evaluation:
 
 figures:
   enabled: true
-  formats: [png, pdf]  # png, pdf, and svg are supported
-  dpi: 300             # 150-600; applies to raster output
+  model_by_model: false  # false = core cross-model figures only
+  formats: [png]
+  dpi: 600
 ```
 
 The evaluation adjustment is trained only on `evaluation.training` and scored
@@ -147,9 +148,16 @@ evaluation, the pipeline trains the saved production adjustment on the complete
 `calibration` period. This provides held-out diagnostics without discarding the
 validation years from the final fit.
 
-Figure generation deliberately retains the full historical baseline in memory
-while future windows are processed and repeats several aggregations. Start with
-one model and PNG only. Add PDF after confirming the workflow fits the runtime.
+The default produces three cross-model core figures under `figures/core/`, with
+600-DPI PNGs and CSV source metrics. Set `model_by_model: true` to additionally
+render every model/window diagnostic under `figures/by-model/`. PDF and SVG
+remain supported when a journal requires vector line art, but they are not part
+of the default paper template; DPI applies only to PNG.
+
+Model-by-model figure generation deliberately retains the full historical
+baseline in memory while future windows are processed and repeats several
+aggregations. Leave it off for the normal cross-model run. If enabled, start
+with one model and PNG only.
 
 ## 3. Prepare MSWEP correctly
 
@@ -239,8 +247,8 @@ production run:
 1. Use `scratch_dir: /content/cloud-qdm-scratch` in Colab.
 2. Keep `earth_engine_chunk_years: 10`; fall back to 5 only after a timeout.
 3. Use `netcdf_compression_level: 1`; higher levels spend more CPU for smaller files.
-4. Leave `figures.enabled: false` during correction, then make paper figures in
-   a dedicated analysis run when practical.
+4. Keep `figures.model_by_model: false` unless supplementary diagnostics are
+   required; this avoids dozens of figures per model/scenario/window.
 5. Keep MSWEP regional and chunked, and avoid reading a global NetCDF directly
    from mounted Drive repeatedly.
 
@@ -256,7 +264,7 @@ production run:
 | `logs/pipeline.log` | Progress and exception details |
 | `references/<variable>.nc` | Optional saved references |
 | `figures/core/` | Cross-model paper figures and consolidated CSV metrics |
-| `figures/by-model/...` | Model-level evaluation and projection figures |
+| `figures/by-model/...` | Optional model-level figures; written only when `model_by_model: true` |
 
 `summary.csv` is a screening aid, not scientific validation.
 The [paper-figure guide](paper-figures.md) defines every plotted statistic and

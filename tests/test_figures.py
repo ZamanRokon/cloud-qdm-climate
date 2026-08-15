@@ -2,11 +2,16 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
+from PIL import Image
 
 from cloud_qdm.config import FigureConfig
 from cloud_qdm.diagnostics import evaluation_rows
 from cloud_qdm.figures import (
+    _draw_taylor_axis,
+    _pyplot,
+    _save,
     make_ensemble_figures,
     make_evaluation_figures,
     make_projection_figures,
@@ -90,3 +95,44 @@ def test_projection_and_ensemble_figure_suites_render(tmp_path: Path) -> None:
     assert len(ensemble_paths) == 3
     assert all(path.exists() and path.stat().st_size > 0 for path in projection_paths)
     assert all(path.exists() and path.stat().st_size > 0 for path in ensemble_paths)
+
+
+def test_taylor_axis_is_limited_to_the_standard_positive_correlation_quadrant() -> None:
+    rows = evaluation_rows(
+        _datasets(1.0, 0.0),
+        _datasets(1.4, 2.0),
+        _datasets(1.05, 0.1),
+        model="TEST",
+        period="held-out",
+    )
+    selected = [row for row in rows if row["variable"] == "pr" and row["stage"] == "raw"]
+    plt = _pyplot()
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+
+    _draw_taylor_axis(
+        ax,
+        selected,
+        title="Precipitation — Before QDM",
+        radial_max=1.75,
+        point_styles={"TEST": ("#0072B2", "o")},
+        style_field="model",
+        show_standard_deviation_label=True,
+    )
+
+    assert np.isclose(ax.get_thetamin(), 0)
+    assert np.isclose(ax.get_thetamax(), 90)
+    assert np.allclose(ax.get_xlim(), (0, np.pi / 2))
+    plt.close(fig)
+
+
+def test_png_is_written_with_configured_600_dpi(tmp_path: Path) -> None:
+    plt = _pyplot()
+    fig, _ = plt.subplots(figsize=(1, 1))
+    path = _save(
+        fig,
+        tmp_path / "publication",
+        FigureConfig(enabled=True, formats=("png",), dpi=600),
+    )[0]
+
+    with Image.open(path) as image:
+        assert image.info["dpi"][0] == pytest.approx(600, rel=0.01)

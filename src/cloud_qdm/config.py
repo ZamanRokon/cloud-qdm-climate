@@ -166,8 +166,9 @@ class EvaluationConfig:
 @dataclass(frozen=True)
 class FigureConfig:
     enabled: bool = False
-    formats: tuple[str, ...] = ("png", "pdf")
-    dpi: int = 300
+    model_by_model: bool = False
+    formats: tuple[str, ...] = ("png",)
+    dpi: int = 600
 
 
 @dataclass(frozen=True)
@@ -440,18 +441,19 @@ def _parse_figures(raw: dict[str, Any]) -> FigureConfig:
     data = raw.get("figures", {})
     if not isinstance(data, dict):
         raise ConfigurationError("'figures' must be a YAML mapping.")
-    formats = _unique_list({"formats": data.get("formats", ["png", "pdf"])}, "formats")
+    formats = _unique_list({"formats": data.get("formats", ["png"])}, "formats")
     unsupported = sorted(set(formats) - {"pdf", "png", "svg"})
     if unsupported:
         raise ConfigurationError("figures.formats supports only png, pdf, and svg.")
     try:
-        dpi = int(data.get("dpi", 300))
+        dpi = int(data.get("dpi", 600))
     except (TypeError, ValueError) as exc:
         raise ConfigurationError("figures.dpi must be an integer.") from exc
     if not 150 <= dpi <= 600:
         raise ConfigurationError("figures.dpi must be between 150 and 600.")
     return FigureConfig(
         enabled=_boolean(data, "enabled", False, "figures"),
+        model_by_model=_boolean(data, "model_by_model", False, "figures"),
         formats=formats,
         dpi=dpi,
     )

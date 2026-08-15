@@ -71,7 +71,6 @@ processing:
 
 figures:
   enabled: true
-  formats:
-    - png
-    - pdf
-  dpi: 300
+  model_by_model: false
+  formats: [png]
+  dpi: 600

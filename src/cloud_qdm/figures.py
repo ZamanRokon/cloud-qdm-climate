@@ -32,6 +32,8 @@ RAW_COLOR = "#D55E00"
 CORRECTED_COLOR = "#0072B2"
 STAGE_COLORS = {"reference": REFERENCE_COLOR, "raw": RAW_COLOR, "corrected": CORRECTED_COLOR}
 MARKERS = {"tas": "o", "tasmax": "^", "tasmin": "v", "pr": "s"}
+TAYLOR_VARIABLE_ORDER = ("pr", "tasmax", "tasmin", "tas")
+TAYLOR_MARKERS = ("o", "s", "^", "v", "D", "P", "X", "<", ">", "h", "8", "p", "*")
 
 
 class FigureError(RuntimeError):
@@ -52,10 +54,10 @@ def _pyplot():
 def _style(plt) -> None:
     plt.rcParams.update(
         {
-            "axes.grid": True,
+            "axes.grid": False,
             "axes.spines.top": False,
             "axes.spines.right": False,
-            "figure.dpi": 450,
+            "figure.dpi": 120,
             "font.family": "DejaVu Sans",
             "font.size": 9,
             "legend.frameon": False,
@@ -69,7 +71,10 @@ def _save(fig, base: Path, settings: FigureConfig) -> list[Path]:
     paths = []
     for extension in settings.formats:
         path = base.with_suffix(f".{extension}")
-        fig.savefig(path, dpi=settings.dpi, bbox_inches="tight")
+        save_options: dict[str, Any] = {"bbox_inches": "tight"}
+        if extension == "png":
+            save_options["dpi"] = settings.dpi
+        fig.savefig(path, **save_options)
         paths.append(path)
     _pyplot().close(fig)
     return paths
@@ -85,73 +90,121 @@ def _line_legend(ax) -> None:
     ax.legend(loc="best", ncols=3, fontsize=8)
 
 
+def _taylor_radial_max(rows: Sequence[dict[str, Any]]) -> float:
+    ratios = np.asarray([row["std_ratio"] for row in rows], dtype=float)
+    ratios = ratios[np.isfinite(ratios)]
+    value = max(1.25, float(np.nanmax(ratios)) * 1.12 if ratios.size else 1.25)
+    step = 0.25 if value <= 2 else 0.5 if value <= 4 else 1.0
+    return float(np.ceil(value / step) * step)
+
+
+def _model_point_styles(rows: Sequence[dict[str, Any]], plt) -> dict[str, tuple[Any, str]]:
+    models = list(dict.fromkeys(str(row["model"]) for row in rows))
+    colors = plt.get_cmap("tab20")(np.linspace(0, 1, max(len(models), 2)))
+    return {
+        model: (colors[index], TAYLOR_MARKERS[index % len(TAYLOR_MARKERS)])
+        for index, model in enumerate(models)
+    }
+
+
 def _draw_taylor_axis(
     ax,
     rows: Sequence[dict[str, Any]],
     *,
     title: str,
-    label_models: bool,
-    show_explanation: bool = True,
+    radial_max: float,
+    point_styles: Mapping[str, tuple[Any, str]],
+    style_field: str,
+    show_standard_deviation_label: bool,
 ) -> None:
-    correlations = np.array([row["correlation"] for row in rows], dtype=float)
-    ratios = np.array([row["std_ratio"] for row in rows], dtype=float)
-    valid = np.isfinite(correlations) & np.isfinite(ratios)
-    radial_max = max(1.5, float(np.nanmax(ratios[valid])) * 1.15 if valid.any() else 1.5)
+    # Taylor (2001): radius = normalized SD, angle = arccos(correlation),
+    # and distance from the reference point = normalized centered RMSD.
+    ax.set_theta_zero_location("E")
+    ax.set_theta_direction(1)
+    ax.set_thetamin(0)
+    ax.set_thetamax(90)
+    ax.set_xlim(0, np.pi / 2)
+    ax.set_ylim(0, radial_max)
 
-    theta = np.linspace(0, np.pi, 181)
-    radius = np.linspace(0, radial_max, 160)
+    theta = np.linspace(0, np.pi / 2, 181)
+    radius = np.linspace(0, radial_max, 180)
     theta_grid, radius_grid = np.meshgrid(theta, radius)
     centered_rmse = np.sqrt(1 + radius_grid**2 - 2 * radius_grid * np.cos(theta_grid))
-    contours = ax.contour(theta_grid, radius_grid, centered_rmse, colors="0.72", linewidths=0.6)
-    ax.clabel(contours, inline=True, fontsize=7, fmt="%.1f")
+    rmse_max = float(np.sqrt(1 + radial_max**2))
+    contours = ax.contour(
+        theta_grid,
+        radius_grid,
+        centered_rmse,
+        levels=np.linspace(rmse_max / 5, 4 * rmse_max / 5, 4),
+        colors="0.55",
+        linewidths=0.55,
+        linestyles="--",
+    )
+    ax.clabel(contours, inline=True, fontsize=6, fmt="%.2g")
 
-    correlation_ticks = np.array([-1, -0.5, 0, 0.5, 0.7, 0.9, 1.0])
+    correlation_ticks = np.array([1.0, 0.99, 0.95, 0.9, 0.8, 0.7, 0.6, 0.4, 0.2, 0.0])
     ax.set_xticks(np.arccos(correlation_ticks))
-    ax.set_xticklabels([f"{value:g}" for value in correlation_ticks])
-    ax.set_ylim(0, radial_max)
-    ax.set_title(title, pad=18, fontweight="bold")
-    ax.set_xlabel("Correlation", labelpad=12)
-    if show_explanation:
+    ax.set_xticklabels([f"{value:g}" for value in correlation_ticks], fontsize=6.5)
+    radial_ticks = np.linspace(0, radial_max, 6)[1:]
+    ax.set_yticks(radial_ticks)
+    ax.set_yticklabels([f"{value:.2g}" for value in radial_ticks], fontsize=6.5)
+    ax.set_rlabel_position(91)
+    ax.tick_params(axis="x", pad=1)
+    ax.grid(color="0.72", linewidth=0.55)
+    ax.set_title(title, pad=17, fontsize=9, fontweight="bold")
+    ax.text(
+        0.73,
+        0.91,
+        "Correlation coefficient",
+        transform=ax.transAxes,
+        rotation=-42,
+        ha="center",
+        va="center",
+        fontsize=6.5,
+        fontweight="bold",
+    )
+    if show_standard_deviation_label:
         ax.text(
-            0.02,
-            0.02,
-            "Radius: normalized SD\nContours: centered RMSE",
+            -0.15,
+            0.43,
+            "Normalized standard deviation",
             transform=ax.transAxes,
+            rotation=90,
+            ha="center",
+            va="center",
             fontsize=7,
-            va="bottom",
+            fontweight="bold",
         )
-    ax.plot(0, 1, marker="*", markersize=10, color=REFERENCE_COLOR, label="Reference")
+    ax.plot(theta, np.ones_like(theta), color="0.3", linestyle="--", linewidth=0.8)
+    ax.scatter(
+        0,
+        1,
+        marker="*",
+        s=72,
+        facecolor="black",
+        edgecolor="black",
+        linewidth=0.5,
+        zorder=5,
+    )
 
-    seen: set[str] = set()
     for row in rows:
         correlation = float(row["correlation"])
         ratio = float(row["std_ratio"])
         if not np.isfinite(correlation) or not np.isfinite(ratio):
             continue
-        stage = str(row["stage"])
-        variable = str(row["variable"])
-        label = stage.title() if stage not in seen else None
-        seen.add(stage)
+        style = str(row[style_field])
+        color, marker = point_styles[style]
+        negative = correlation < 0
         ax.scatter(
-            np.arccos(np.clip(correlation, -1, 1)),
+            np.arccos(np.clip(correlation, 0, 1)),
             ratio,
-            color=STAGE_COLORS[stage],
-            marker=MARKERS[variable],
-            s=34,
-            edgecolor="white",
-            linewidth=0.4,
-            label=label,
-            zorder=3,
+            facecolor=color,
+            marker=marker,
+            s=32,
+            edgecolor="#B2182B" if negative else "black",
+            linewidth=1.0 if negative else 0.45,
+            zorder=4,
         )
-        if label_models and stage == "corrected":
-            ax.annotate(
-                str(row["model"]),
-                (np.arccos(np.clip(correlation, -1, 1)), ratio),
-                xytext=(3, 3),
-                textcoords="offset points",
-                fontsize=6,
-            )
-    ax.legend(loc="upper left", bbox_to_anchor=(0.02, 0.98), fontsize=8)
 
 
 def _plot_taylor(
@@ -165,43 +218,108 @@ def _plot_taylor(
     plt = _pyplot()
     _style(plt)
     if facet_variables:
-        fig, axes = plt.subplots(2, 2, figsize=(10, 9), subplot_kw={"projection": "polar"})
-        for ax, variable in zip(axes.flat, VARIABLE_LABELS, strict=True):
+        fig, axes = plt.subplots(
+            4,
+            2,
+            figsize=(10.5, 15.2),
+            subplot_kw={"projection": "polar"},
+            layout="constrained",
+        )
+        fig.get_layout_engine().set(h_pad=0.28, w_pad=0.12, hspace=0.16, wspace=0.08)
+        point_styles = _model_point_styles(rows, plt)
+        panel = 0
+        for row_index, variable in enumerate(TAYLOR_VARIABLE_ORDER):
+            variable_rows = [row for row in rows if row["variable"] == variable]
+            radial_max = _taylor_radial_max(variable_rows)
+            for column, (stage, stage_label) in enumerate(
+                (("raw", "Before QDM"), ("corrected", "After QDM"))
+            ):
+                letter = chr(ord("a") + panel)
+                selected = [row for row in variable_rows if row["stage"] == stage]
+                _draw_taylor_axis(
+                    axes[row_index, column],
+                    selected,
+                    title=(f"({letter}) {VARIABLE_LABELS[variable]} — {stage_label}"),
+                    radial_max=radial_max,
+                    point_styles=point_styles,
+                    style_field="model",
+                    show_standard_deviation_label=column == 0,
+                )
+                panel += 1
+        fig.suptitle(
+            f"{title}\nDashed contours show normalized centered RMSD",
+            fontsize=13,
+            fontweight="bold",
+        )
+        handles = [
+            plt.Line2D(
+                [],
+                [],
+                color="black",
+                marker="*",
+                markersize=9,
+                linestyle="None",
+                label="Reference",
+            )
+        ] + [
+            plt.Line2D(
+                [],
+                [],
+                color=color,
+                marker=marker,
+                markeredgecolor="black",
+                markeredgewidth=0.45,
+                linestyle="None",
+                label=model,
+            )
+            for model, (color, marker) in point_styles.items()
+        ]
+        fig.legend(
+            handles=handles,
+            loc="outside lower center",
+            ncols=min(5, len(handles)),
+            fontsize=7,
+            title="Models",
+            title_fontsize=8,
+        )
+    else:
+        fig, axes = plt.subplots(
+            2,
+            2,
+            figsize=(9, 8.2),
+            subplot_kw={"projection": "polar"},
+            layout="constrained",
+        )
+        fig.get_layout_engine().set(h_pad=0.24, w_pad=0.12, hspace=0.14, wspace=0.08)
+        point_styles = {"raw": (RAW_COLOR, "o"), "corrected": (CORRECTED_COLOR, "s")}
+        for panel, (ax, variable) in enumerate(zip(axes.flat, TAYLOR_VARIABLE_ORDER, strict=True)):
             selected = [row for row in rows if row["variable"] == variable]
             _draw_taylor_axis(
                 ax,
                 selected,
-                title=f"{VARIABLE_LABELS[variable]} ({PLOT_UNITS[variable]})",
-                label_models=True,
-                show_explanation=False,
+                title=f"({chr(ord('a') + panel)}) {VARIABLE_LABELS[variable]}",
+                radial_max=_taylor_radial_max(selected),
+                point_styles=point_styles,
+                style_field="stage",
+                show_standard_deviation_label=panel % 2 == 0,
             )
-        fig.suptitle(title, y=0.99, fontsize=13, fontweight="bold")
-        fig.text(
-            0.5,
-            0.955,
-            "Radius: normalized standard deviation; contours: normalized centered RMSE",
-            ha="center",
-            fontsize=8,
-        )
-        fig.subplots_adjust(hspace=0.42, wspace=0.24, top=0.86)
-    else:
-        fig, ax = plt.subplots(figsize=(7.2, 6.2), subplot_kw={"projection": "polar"})
-        _draw_taylor_axis(ax, rows, title=title, label_models=False)
-        stage_legend = ax.get_legend()
-        if stage_legend:
-            ax.add_artist(stage_legend)
-        variable_handles = [
+        handles = [
             plt.Line2D(
                 [],
                 [],
-                color="0.35",
-                marker=MARKERS[variable],
+                color=color,
+                marker=marker,
                 linestyle="None",
-                label=variable,
+                label="Raw model" if stage == "raw" else "After QDM",
             )
-            for variable in VARIABLE_LABELS
+            for stage, (color, marker) in point_styles.items()
         ]
-        ax.legend(handles=variable_handles, loc="lower right", fontsize=8)
+        fig.suptitle(
+            f"{title}\nDashed contours show normalized centered RMSD",
+            fontsize=13,
+            fontweight="bold",
+        )
+        fig.legend(handles=handles, loc="outside lower center", ncols=2, fontsize=8)
     return _save(fig, base, settings)
 
 
@@ -211,11 +329,11 @@ def _plot_skill_improvement(
     plt = _pyplot()
     _style(plt)
     metrics = {
-        "|bias| / reference SD": "normalized_bias",
-        "RMSE / reference SD": "normalized_rmse",
-        "Centered RMSE": "centered_rmse",
+        "|Bias| /\nreference SD": "normalized_bias",
+        "RMSE /\nreference SD": "normalized_rmse",
+        "Centered\nRMSE": "centered_rmse",
         "|SD ratio - 1|": "std_ratio",
-        "1 - correlation": "correlation",
+        "1 -\ncorrelation": "correlation",
     }
     matrix = np.full((len(VARIABLE_LABELS), len(metrics)), np.nan)
     for row_index, variable in enumerate(VARIABLE_LABELS):
@@ -235,9 +353,9 @@ def _plot_skill_improvement(
                 100 * (raw_error - corrected_error) / raw_error if raw_error else np.nan
             )
 
-    fig, ax = plt.subplots(figsize=(8.2, 3.7))
+    fig, ax = plt.subplots(figsize=(8.8, 4.1), layout="constrained")
     image = ax.imshow(np.clip(matrix, -100, 100), cmap="RdYlBu", vmin=-100, vmax=100)
-    ax.set_xticks(range(len(metrics)), labels=list(metrics), rotation=25, ha="right")
+    ax.set_xticks(range(len(metrics)), labels=list(metrics))
     ax.set_yticks(range(len(VARIABLE_LABELS)), labels=list(VARIABLE_LABELS))
     for row in range(matrix.shape[0]):
         for column in range(matrix.shape[1]):
@@ -254,7 +372,6 @@ def _plot_skill_improvement(
     ax.set_title(title, fontweight="bold")
     colorbar = fig.colorbar(image, ax=ax, shrink=0.82)
     colorbar.set_label("Error reduction after QDM (%)")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -269,7 +386,7 @@ def _plot_seasonal_cycle(
 ) -> list[Path]:
     plt = _pyplot()
     _style(plt)
-    fig, axes = plt.subplots(2, 2, figsize=(10, 6.7), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.0), sharex=True, layout="constrained")
     months = np.arange(1, 13)
     for ax, variable in zip(axes.flat, VARIABLE_LABELS, strict=True):
         for stage, source in (
@@ -293,7 +410,6 @@ def _plot_seasonal_cycle(
     axes[-1, 1].set_xlabel("Calendar month")
     _line_legend(axes[0, 0])
     fig.suptitle(title, fontsize=13, fontweight="bold")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -308,7 +424,7 @@ def _plot_distribution(
 ) -> list[Path]:
     plt = _pyplot()
     _style(plt)
-    fig, axes = plt.subplots(2, 4, figsize=(14, 6.5))
+    fig, axes = plt.subplots(2, 4, figsize=(15.5, 7.2), layout="constrained")
     for column, variable in enumerate(VARIABLE_LABELS):
         reference = quantile_values(references[variable], variable)
         raw_values = quantile_values(raw[variable], variable)
@@ -367,7 +483,6 @@ def _plot_distribution(
     axes[0, 0].legend(fontsize=8)
     axes[1, 0].legend(fontsize=8)
     fig.suptitle(title, fontsize=13, fontweight="bold")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -453,7 +568,7 @@ def _plot_wet_days(
 ) -> list[Path]:
     plt = _pyplot()
     _style(plt)
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), sharex=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), sharex=True, layout="constrained")
     months = np.arange(1, 13)
     for stage, source in (
         ("reference", references),
@@ -475,7 +590,6 @@ def _plot_wet_days(
         ax.grid(alpha=0.2)
     _line_legend(axes[0])
     fig.suptitle(title, fontsize=12, fontweight="bold")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -504,7 +618,7 @@ def _plot_extremes(
         "TNn": "TNn (°C)",
         "DTR": "Mean daily temperature range (°C)",
     }
-    fig, axes = plt.subplots(2, 4, figsize=(13, 6.5))
+    fig, axes = plt.subplots(2, 4, figsize=(14.2, 7.0), layout="constrained")
     for ax, (index, ylabel) in zip(axes.flat, labels.items(), strict=False):
         for stage, frame in frames.items():
             ax.plot(
@@ -524,7 +638,6 @@ def _plot_extremes(
     axes.flat[-1].legend(handles, legend_labels, loc="center", fontsize=9)
     axes.flat[-1].axis("off")
     fig.suptitle(title, fontsize=13, fontweight="bold")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -710,7 +823,7 @@ def _plot_change_signal(
     plt = _pyplot()
     _style(plt)
     frame = pd.DataFrame(rows)
-    fig, axes = plt.subplots(2, 2, figsize=(10, 6.5), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.0), sharex=True, layout="constrained")
     for ax, variable in zip(axes.flat, VARIABLE_LABELS, strict=True):
         selected = frame[frame["variable"] == variable]
         ax.axhline(0, color="0.55", linewidth=1)
@@ -736,7 +849,6 @@ def _plot_change_signal(
         ax.grid(alpha=0.2)
     _line_legend(axes[0, 0])
     fig.suptitle(title, fontsize=13, fontweight="bold")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -759,7 +871,7 @@ def _plot_projection_series(
 ) -> list[Path]:
     plt = _pyplot()
     _style(plt)
-    fig, axes = plt.subplots(2, 2, figsize=(10, 6.5), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.0), sharex=True, layout="constrained")
     for ax, variable in zip(axes.flat, VARIABLE_LABELS, strict=True):
         raw_years, raw_values = _annual_mean(future_raw[variable], variable)
         corrected_years, corrected_values = _annual_mean(future_corrected[variable], variable)
@@ -778,7 +890,6 @@ def _plot_projection_series(
         ax.grid(alpha=0.2)
     _line_legend(axes[0, 0])
     fig.suptitle(title, fontsize=13, fontweight="bold")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -848,9 +959,12 @@ def _plot_ensemble_skill(
             corrected = float(selected[selected["stage"] == "corrected"]["normalized_rmse"].iloc[0])
             matrix[row_index, column] = 100 * (raw - corrected) / raw if raw else np.nan
     fig_height = max(3.5, 0.35 * len(models) + 1.8)
-    fig, ax = plt.subplots(figsize=(7.2, fig_height))
+    fig, ax = plt.subplots(figsize=(8.2, fig_height), layout="constrained")
     image = ax.imshow(np.clip(matrix, -100, 100), cmap="RdYlBu", vmin=-100, vmax=100, aspect="auto")
-    ax.set_xticks(range(4), labels=list(VARIABLE_LABELS))
+    ax.set_xticks(
+        range(4),
+        labels=[VARIABLE_LABELS[variable] for variable in VARIABLE_LABELS],
+    )
     ax.set_yticks(range(len(models)), labels=models)
     for row in range(matrix.shape[0]):
         for column in range(matrix.shape[1]):
@@ -866,7 +980,6 @@ def _plot_ensemble_skill(
     colorbar = fig.colorbar(image, ax=ax)
     colorbar.set_label("Normalized RMSE reduction (%)")
     ax.set_title("Independent-evaluation skill improvement", fontweight="bold")
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
@@ -879,7 +992,13 @@ def _plot_ensemble_change(
     frame = frame[np.isclose(frame["quantile"], 0.5)]
     groups = list(dict.fromkeys(zip(frame["scenario"], frame["period"], strict=True)))
     labels = [f"{scenario}\n{period}" for scenario, period in groups]
-    fig, axes = plt.subplots(2, 2, figsize=(max(10, len(groups) * 1.6), 7), sharex=True)
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(max(10.5, len(groups) * 1.8), 7.4),
+        sharex=True,
+        layout="constrained",
+    )
     for ax, variable in zip(axes.flat, VARIABLE_LABELS, strict=True):
         selected = frame[frame["variable"] == variable]
         raw_values = [
@@ -908,7 +1027,7 @@ def _plot_ensemble_change(
         ax.axhline(0, color="0.55", linewidth=0.8)
         ax.set_title(VARIABLE_LABELS[variable])
         ax.set_ylabel(f"Median-quantile change ({selected['units'].iloc[0]})")
-        ax.set_xticks(positions, labels=labels, rotation=25, ha="right")
+        ax.set_xticks(positions, labels=labels)
         ax.grid(axis="y", alpha=0.2)
     handles = [
         plt.Line2D([], [], color=RAW_COLOR, linewidth=7, alpha=0.65, label="Raw model"),
@@ -918,7 +1037,6 @@ def _plot_ensemble_change(
     fig.suptitle(
         "Multi-model projected change by scenario and window", fontsize=13, fontweight="bold"
     )
-    fig.tight_layout()
     return _save(fig, base, settings)
 
 
