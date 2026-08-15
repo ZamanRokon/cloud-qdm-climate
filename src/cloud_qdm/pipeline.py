@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import gc
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -639,7 +639,7 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
             write_manifest(manifest, manifest_path)
             if not config.processing.continue_on_model_error:
                 manifest["status"] = "failed"
-                manifest["finished_utc"] = datetime.now(UTC).isoformat()
+                manifest["finished_utc"] = datetime.now(timezone.utc).isoformat()
                 write_manifest(manifest, manifest_path)
                 raise
         finally:
@@ -667,7 +667,7 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
             settings=config.figures,
         )
         manifest["figures"] = [str(path) for path in figure_paths]
-    manifest["finished_utc"] = datetime.now(UTC).isoformat()
+    manifest["finished_utc"] = datetime.now(timezone.utc).isoformat()
     write_summary(summary_rows, config.run_dir / "summary.csv")
     write_manifest(manifest, manifest_path)
     logger.info("Run finished with status: %s", manifest["status"])

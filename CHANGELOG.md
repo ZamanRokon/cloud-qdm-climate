@@ -22,6 +22,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Removed the global plot grid introduced in PR #9 and tightened multi-panel,
   heatmap, legend, title, and tick-label layouts.
 - Expanded CI to test every advertised Python version (3.10-3.13).
+- Restored Python 3.10 compatibility for UTC timestamps and the CLI metadata
+  test.
 - Renamed the installed command from `cloud-qdm` to the shorter `qdm`.
 - Batched multiband Earth Engine reads and related NetCDF writes, stopped
   recomputing QDM for summaries, and added fast local scratch and compression

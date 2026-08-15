@@ -8,7 +8,7 @@ import platform
 import sys
 import tempfile
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,7 @@ def _netcdf_payload(
     output.attrs.pop("_FillValue", None)
     output.attrs.pop("missing_value", None)
     output.attrs.update({key: str(value) for key, value in attributes.items()})
-    output.attrs["created_utc"] = datetime.now(UTC).isoformat()
+    output.attrs["created_utc"] = datetime.now(timezone.utc).isoformat()
     output.attrs["software"] = "cloud-qdm-climate"
     output.attrs["software_version"] = __version__
     encoding = {
@@ -202,7 +202,7 @@ def base_manifest() -> dict[str, Any]:
     return {
         "software": "cloud-qdm-climate",
         "software_version": __version__,
-        "started_utc": datetime.now(UTC).isoformat(),
+        "started_utc": datetime.now(timezone.utc).isoformat(),
         "python": sys.version,
         "platform": platform.platform(),
         "dependencies": dependencies,
