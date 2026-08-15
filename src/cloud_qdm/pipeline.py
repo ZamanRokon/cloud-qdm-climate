@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import gc
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,12 @@ from cloud_qdm.coordinates import (
     align_calibration_time,
     enforce_temperature_ordering,
     regrid_to_reference,
+)
+from cloud_qdm.diagnostics import (
+    evaluation_rows as build_evaluation_rows,
+)
+from cloud_qdm.diagnostics import (
+    projection_change_rows,
 )
 from cloud_qdm.figures import (
     make_ensemble_figures,
@@ -411,6 +417,68 @@ def _train_model(
     return adjustments, historical_on_reference, evaluation
 
 
+def _evaluation_diagnostics(
+    config: RunConfig,
+    evaluation: EvaluationData,
+    *,
+    model: str,
+) -> tuple[list[Path], list[dict[str, Any]]]:
+    """Build core metrics and optionally render the per-model evaluation suite."""
+    if config.evaluation is None:
+        raise RuntimeError("Evaluation periods are required for figure diagnostics.")
+    if not config.figures.model_by_model:
+        return [], build_evaluation_rows(
+            *evaluation,
+            model=model,
+            period=config.evaluation.validation.label,
+        )
+    return make_evaluation_figures(
+        *evaluation,
+        model=model,
+        period=config.evaluation.validation.label,
+        output_dir=config.run_dir / "figures" / "by-model" / model / "evaluation",
+        settings=config.figures,
+        wet_day_threshold=config.qdm.wet_day_threshold_mm,
+    )
+
+
+def _projection_diagnostics(
+    config: RunConfig,
+    baseline_raw: DataByVariable,
+    baseline_corrected: DataByVariable,
+    future_raw: DataByVariable,
+    future_corrected: DataByVariable,
+    *,
+    model: str,
+    scenario: str,
+    period: str,
+) -> tuple[list[Path], list[dict[str, Any]]]:
+    """Build core projection metrics and optionally render per-model figures."""
+    if not config.figures.model_by_model:
+        return [], projection_change_rows(
+            baseline_raw,
+            baseline_corrected,
+            future_raw,
+            future_corrected,
+            model=model,
+            scenario=scenario,
+            period=period,
+        )
+    return make_projection_figures(
+        baseline_raw,
+        baseline_corrected,
+        future_raw,
+        future_corrected,
+        model=model,
+        scenario=scenario,
+        period=period,
+        output_dir=(
+            config.run_dir / "figures" / "by-model" / model / "projection" / scenario / period
+        ),
+        settings=config.figures,
+    )
+
+
 def run_pipeline(config: RunConfig) -> dict[str, Any]:
     """Execute a validated run and return its manifest."""
     config.run_dir.mkdir(parents=True, exist_ok=True)
@@ -450,8 +518,8 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
             )
 
     summary_rows: list[dict[str, Any]] = []
-    evaluation_rows: list[dict[str, Any]] = []
-    projection_rows: list[dict[str, Any]] = []
+    all_evaluation_rows: list[dict[str, Any]] = []
+    all_projection_rows: list[dict[str, Any]] = []
     for model in config.models:
         logger.info("Processing model %s", model)
         manifest["models"][model] = {
@@ -468,14 +536,10 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                 config, model=model, references=references, logger=logger
             )
             if config.figures.enabled and config.evaluation and evaluation:
-                logger.info("Generating independent evaluation figures for %s", model)
-                figure_paths, model_evaluation_rows = make_evaluation_figures(
-                    *evaluation,
-                    model=model,
-                    period=config.evaluation.validation.label,
-                    output_dir=config.run_dir / "figures" / "by-model" / model / "evaluation",
-                    settings=config.figures,
-                    wet_day_threshold=config.qdm.wet_day_threshold_mm,
+                if config.figures.model_by_model:
+                    logger.info("Generating independent evaluation figures for %s", model)
+                figure_paths, model_evaluation_rows = _evaluation_diagnostics(
+                    config, evaluation, model=model
                 )
                 manifest["models"][model]["figures"].extend(map(str, figure_paths))
 
@@ -532,7 +596,15 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                         segment_paths[path.stem].append(path)
 
                     if config.figures.enabled:
-                        figure_paths, rows = make_projection_figures(
+                        if config.figures.model_by_model:
+                            logger.info(
+                                "Generating projection figures for %s/%s/%s",
+                                model,
+                                scenario,
+                                period.label,
+                            )
+                        figure_paths, rows = _projection_diagnostics(
+                            config,
                             historical,
                             baseline_corrected,
                             model_inputs,
@@ -540,16 +612,6 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                             model=model,
                             scenario=scenario,
                             period=period.label,
-                            output_dir=(
-                                config.run_dir
-                                / "figures"
-                                / "by-model"
-                                / model
-                                / "projection"
-                                / scenario
-                                / period.label
-                            ),
-                            settings=config.figures,
                         )
                         manifest["models"][model]["figures"].extend(map(str, figure_paths))
                         model_projection_rows.extend(rows)
@@ -567,8 +629,8 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
                     )
                 )
             manifest["models"][model]["status"] = "complete"
-            evaluation_rows.extend(model_evaluation_rows)
-            projection_rows.extend(model_projection_rows)
+            all_evaluation_rows.extend(model_evaluation_rows)
+            all_projection_rows.extend(model_projection_rows)
             logger.info("Completed model %s", model)
         except Exception as exc:
             manifest["models"][model]["status"] = "failed"
@@ -577,7 +639,7 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
             write_manifest(manifest, manifest_path)
             if not config.processing.continue_on_model_error:
                 manifest["status"] = "failed"
-                manifest["finished_utc"] = datetime.now(UTC).isoformat()
+                manifest["finished_utc"] = datetime.now(timezone.utc).isoformat()
                 write_manifest(manifest, manifest_path)
                 raise
         finally:
@@ -599,13 +661,13 @@ def run_pipeline(config: RunConfig) -> dict[str, Any]:
     if config.figures.enabled:
         logger.info("Generating cross-model paper figures")
         figure_paths = make_ensemble_figures(
-            evaluation_rows,
-            projection_rows,
+            all_evaluation_rows,
+            all_projection_rows,
             output_dir=config.run_dir / "figures" / "core",
             settings=config.figures,
         )
         manifest["figures"] = [str(path) for path in figure_paths]
-    manifest["finished_utc"] = datetime.now(UTC).isoformat()
+    manifest["finished_utc"] = datetime.now(timezone.utc).isoformat()
     write_summary(summary_rows, config.run_dir / "summary.csv")
     write_manifest(manifest, manifest_path)
     logger.info("Run finished with status: %s", manifest["status"])

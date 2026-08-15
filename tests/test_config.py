@@ -57,7 +57,9 @@ def test_paper_config_has_independent_evaluation() -> None:
     path = Path(__file__).parents[1] / "configs" / "example_paper.yml"
     config = load_config(path)
     assert config.figures.enabled
-    assert config.figures.formats == ("png", "pdf")
+    assert not config.figures.model_by_model
+    assert config.figures.formats == ("png",)
+    assert config.figures.dpi == 600
     assert config.evaluation is not None
     assert config.evaluation.training.end.year == 2004
     assert config.evaluation.validation.start.year == 2005

@@ -22,32 +22,42 @@ rather than one aggregate score ([VALUE framework](https://doi.org/10.1002/2014E
 
 ## 2. Core figures
 
+With `figures.enabled: true` and `figures.model_by_model: false`, the pipeline
+writes only these all-model products at 600-DPI PNG plus their CSV source data:
+
 | Figure | What it answers | Important interpretation |
 |---|---|---|
-| `evaluation-taylor-by-variable` | Do models reproduce daily regional variability? | Radius is normalized SD; angle is correlation; gray contours are centered RMSE. Mean bias is absent. |
+| `evaluation-taylor-by-variable` | Do models reproduce daily regional variability before and after QDM? | Eight first-quadrant panels show four variables × two stages. Radius is normalized SD; angle is arccos(correlation); dashed contours are normalized centered RMSD. |
 | `evaluation-skill-improvement` | How much does QDM reduce normalized RMSE? | Positive percentages are improvement; inspect negative cells rather than hiding them. |
-| `seasonal-cycle` | Does QDM improve monthly climatology? | Curves are cosine-latitude-weighted AOI means. |
-| `distribution-and-quantile-bias` | Are central and tail quantiles corrected? | Q-Q proximity to 1:1 and residual quantile bias must both be shown. |
-| `spatial-bias-<variable>` | Where does QDM help or worsen bias? | Precipitation uses percent bias where reference mean is at least 0.1 mm d-1. |
-| `quantile-change-signal` | Are modeled future changes retained across quantiles? | Temperature change is absolute; precipitation change is relative. Equality is desirable but not proof the raw signal is realistic. |
-| `change-map-<variable>` | Where do raw and corrected changes differ? | The third panel isolates the signal alteration introduced by QDM. |
 | `projection-ensemble-change` | How do models/scenarios/windows differ? | Boxes summarize model spread, not probabilistic confidence intervals. |
 
 The Taylor construction follows
 [Taylor (2001)](https://pcmdi.llnl.gov/report/pdf/55.pdf). QDM change-signal
 plots follow the central diagnostic in
 [Cannon, Sobie and Murdock (2015)](https://doi.org/10.1175/JCLI-D-14-00754.1).
+Before/after panels for a variable share the same radial limit. The reference
+point is correlation 1 and normalized SD 1. If a model correlation is negative,
+the quarter-circle display places it on the correlation-zero boundary with a
+red edge; the exact negative value remains in `evaluation-metrics.csv`.
 
 ## 3. Supplementary figures
 
+Set `figures.model_by_model: true` to add these products. This can create many
+files and materially increase runtime.
+
 | Figure | Recommended use |
 |---|---|
+| Per-model `taylor-diagram` | Identify models hidden by an ensemble summary. |
+| Per-model `skill-metrics.csv` | Report bias, MAE, RMSE, normalized errors, correlation, SD ratio, and sample size. |
+| `seasonal-cycle` | Check monthly climatology; curves are cosine-latitude-weighted AOI means. |
+| `distribution-and-quantile-bias` | Check Q-Q proximity to 1:1 and residual central/tail quantile bias. |
+| `spatial-bias-<variable>` | Map where QDM helps or worsens bias; precipitation percent bias requires reference mean ≥ 0.1 mm d-1. |
 | `wet-day-diagnostics` | Show monthly occurrence and conditional intensity for precipitation. |
 | `annual-extremes` | Compare regional PRCPTOT, Rx1day, Rx5day, CDD, TXx, TNn, and DTR; PRCPTOT and CDD use the canonical 1 mm wet-day threshold. |
 | `intervariable-dependence` | Disclose changes in pairwise dependence from independent univariate adjustment. |
+| `quantile-change-signal` | Check preservation of absolute temperature and relative precipitation change across quantiles. |
+| `change-map-<variable>` | Map raw/corrected change and the signal alteration introduced by QDM. |
 | `annual-projection-series` | Show within-window annual evolution before and after QDM. |
-| Per-model `taylor-diagram` | Identify models hidden by an ensemble summary. |
-| Per-model `skill-metrics.csv` | Report bias, MAE, RMSE, normalized errors, correlation, SD ratio, and sample size. |
 
 The extremes are regional, AOI-mean, ETCCDI-style diagnostics. They are not a
 replacement for grid-cell ETCCDI indices, station extremes, threshold-specific
@@ -63,9 +73,11 @@ threshold. `qdm.random_seed` makes `xsdba` wet-day randomization reproducible.
 Adapt these; do not copy them without inserting the AOI, dates, reference,
 models, sample size, and weighting.
 
-- **Taylor:** “Taylor diagram of held-out daily AOI-mean [variable] for
-  [period]. Radial distance is standard deviation normalized by [reference],
-  angle is Pearson correlation, and contours show normalized centered RMSE.”
+- **Taylor:** “First-quadrant Taylor diagrams of held-out daily AOI-mean
+  precipitation and temperature across [N] models for [period], shown before
+  and after QDM. Radial distance is standard deviation normalized by the
+  reference, angle is arccos(Pearson correlation), and dashed contours show
+  normalized centered RMSD.”
 - **Spatial bias:** “Held-out climatological [variable] reference, raw-model
   bias, QDM-corrected bias, and reduction in absolute bias for [period].”
 - **Quantiles:** “Reference-versus-model quantiles and residual quantile bias
@@ -92,7 +104,8 @@ Before submission, also:
 2. report missing-data rules, calendar handling, wet-day threshold, and units;
 3. compare CHIRPS and MSWEP when reference uncertainty matters;
 4. test sensitivity to the evaluation split and future-window definitions;
-5. export PDF or SVG for line art and retain 300-600 dpi PNG for raster review;
+5. retain the default 600-DPI PNG and export PDF or SVG only when the journal
+   requests vector line art;
 6. use journal-required fonts, dimensions, accessibility, and color standards;
 7. archive the CSV metrics and exact normalized run configuration; and
 8. never describe the model ensemble spread as a probability distribution.

@@ -130,10 +130,14 @@ on the held-out dates. It then fits the production QDM on the full calibration
 period. Evaluation metrics use cosine-latitude-weighted AOI-mean daily series;
 spatial bias panels calculate time-mean fields at every reference-grid cell.
 
-Taylor diagrams report correlation, normalized standard deviation, and
-centered RMSE. They do not show mean bias, extremes, wet-day occurrence, or
-dependence, so they must be interpreted with the accompanying metric, quantile,
-map, and extremes panels. See the [paper-figure guide](paper-figures.md).
+The cross-model Taylor figure uses the standard positive-correlation quadrant:
+radius is normalized standard deviation, angle is arccos(correlation), the
+reference lies at correlation 1 and normalized standard deviation 1, and dashed
+contours are normalized centered RMSD. Separate before/after panels use the
+same radial scale for each variable. Taylor diagrams do not show mean bias,
+extremes, wet-day occurrence, or dependence, so interpret them with the metric
+tables and any enabled supplementary panels. See the
+[paper-figure guide](paper-figures.md).
 
 Report results by season and location, including:
 
